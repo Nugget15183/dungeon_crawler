@@ -7,6 +7,8 @@
 #include <iostream>
 #include <ostream>
 
+//c
+
 namespace logger {
     inline void info(const char* msg) {
         std::cout << "[INFO] " << msg << " [INFO]" << std::endl;

@@ -11,6 +11,8 @@
 using namespace util;
 using namespace logger;
 
+//c
+
 void framebuffer_size_callback(GLFWwindow* win, int width, int height) {
     engine* eng = static_cast<engine*>(glfwGetWindowUserPointer(win));
 

@@ -18,6 +18,8 @@ using namespace logger;
 
 namespace util {
 
+//c
+
 inline string readFile(string path) {
     //get the file itself
     ifstream file(path, ios::in | ios::binary);

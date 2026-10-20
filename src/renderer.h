@@ -7,6 +7,8 @@
 #include <glm/glm.hpp>
 using namespace glm;
 
+//c
+
 struct vertex {
     vec3 pos;
     vec2 uv;
