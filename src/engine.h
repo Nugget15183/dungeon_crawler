@@ -4,8 +4,6 @@
 #include <glad/glad.h>
 #include "GLFW/glfw3.h"
 
-//c
-
 #include <glm/glm.hpp>
 #include "logger.h"
 #include "renderer.h"
@@ -30,6 +28,8 @@ public:
 
     void render();
     void update();
+
+    renderer* Renderer;
 private:
     GLFWwindow* win;
     ivec2* winSize = new ivec2(800, 600);
@@ -43,10 +43,11 @@ private:
 
     int framecount = 0;
 
-    unsigned int shader_program;
-    unsigned int texture;
+    unsigned int m_shader_program;
+    unsigned int ui_shader_program;
 
-    quad q = quad();
+    unsigned int m_texture_atlas;
+    unsigned int m_font_atlas;
 };
 
 

@@ -12,7 +12,5 @@ int main() {
     if (e->init()!=0) {return -1;}
     e->loop();
 
-
-
     return 0;
 }
