@@ -47,11 +47,14 @@ struct quad {
         creationTime = glfwGetTime()+cTimeOffset;
 
         this->pos = pos;
+        this->uv = uv;
     }
 
-    vert2d verts[4];
-    unsigned int idx[6] = {0, 1, 3, 1, 2, 3};
+    UVRect uv;
 
+    vert2d verts[4];
+
+    unsigned int idx[6] = {0, 1, 3, 1, 2, 3};
     unsigned int VAO = 0, VBO = 0, EBO = 0;
     unsigned int texture = 0;
 
@@ -62,6 +65,7 @@ struct quad {
     double creationTime = 0;
 
     vec2 pos;
+    vec3 col = {1,1,1};
 
     void (*onUpdate)(quad*) = nullptr;
 
@@ -115,6 +119,7 @@ struct quad {
 
         glBindVertexArray(VAO);
         glVertexAttrib2f(2, pos.x, pos.y);
+        glVertexAttrib3f(3, col.r, col.g, col.b);
 
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);

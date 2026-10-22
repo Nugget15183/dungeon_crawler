@@ -29,6 +29,8 @@ public:
     void render();
     void update();
 
+    void createLowRes(int w, int h);
+
     renderer* Renderer;
 private:
     GLFWwindow* win;
@@ -48,6 +50,9 @@ private:
 
     unsigned int m_texture_atlas;
     unsigned int m_font_atlas;
+
+    unsigned int lFBO = 0, lCol = 0, lDepth = 0;
+    int lowW = 0, lowH = 0;
 };
 
 

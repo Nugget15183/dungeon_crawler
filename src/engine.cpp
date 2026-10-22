@@ -13,7 +13,6 @@
 using namespace util;
 using namespace logger;
 
-
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f) {
     std::vector<quad*> ret;
     int x = 0;
@@ -158,21 +157,46 @@ int engine::init() {
     Renderer = new renderer();
 
     //title screen
+    float scale = 1.5f;
     int i=0;
-    for (auto q : StrToUI(m_font_atlas, {0, 0.7f}, "Dungeon Crawler", 1.5f)) {
+    for (auto q : StrToUI(m_font_atlas, {0, 0.7f}, "Dungeon Crawler", scale)) {
         i++;
-        q->creationTime-=0.05f*i;
+
+        double cTimeOffset = 0.05f*i;
+
+        q->creationTime-=cTimeOffset;
+        q->col = {0,0,0};
 
         q->onUpdate = [](quad* q) -> void {
-            double t = glfwGetTime() - q->creationTime;
-            q->pos = vec2(q->pos.x, q->pos.y+sin(t)/30000);
+            double age = glfwGetTime() - q->creationTime;
+            q->pos.y += sin(age)/30000;
         };
 
         Renderer->AddToRQ_2D(*q);
+
+        float ns = scale * .8f;//80% original scale
+        vec2 sc = {0.1f*ns, 0.1f*ns};
+
+        quad* fill = new quad(q->pos, sc, q->uv);
+        fill->creationTime=q->creationTime;
+        fill->z = 1;
+        fill->create(m_font_atlas);
+        Renderer->AddToRQ_2D(*fill);
+
+        fill->onUpdate = [](quad* q) -> void {
+            float age = glfwGetTime() - q->creationTime;
+
+            q->pos.y += sin(age)/30000;
+
+            float t = (sin(age * 2.0) + 1.0f) * 0.5f;
+            vec3 colA = {1.0f, 0.76f, 0.0f};//orange
+            vec3 colB = {1.0f, 0.4f, 0.0f};//red-orange
+            q->col = mix(colA, colB, t);
+        };
     }
 
     //test area
-    vector<object*> objs = {
+    vector objs = {
         //floor
         new object({0,-3.5f,0}, {10,1,10}, tileUV(0,0)),
         //walls
@@ -196,25 +220,41 @@ int engine::init() {
     torch->create(m_texture_atlas);
     Renderer->AddLight(*torch);
 
+    createLowRes((int)(180.0f * winSize->x / winSize->y), 180);//180x180px with aspect ratio
+
     info("Initialized Successfully.");
     return 0;
 }
 
 //should NOT be called outside of the loop function
 void engine::render() {
+    //bind low res fbo
+    glBindFramebuffer(GL_FRAMEBUFFER, lFBO);
+    glViewport(0, 0, lowW, lowH);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    //draw 3d
     glUseProgram(m_shader_program);
-
     Renderer->LoadRQ_M();
     Renderer->Draw3D(m_shader_program, (float)winSize->x / (float)winSize->y);
 
-    glUseProgram(ui_shader_program);
+    //upscale FBO for pixelation
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, lFBO);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, lowW, lowH, 0, 0, winSize->x, winSize->y,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
+    //convert back to regular scale for ui
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, winSize->x, winSize->y);
+
+    //draw 2d
+    glUseProgram(ui_shader_program);
     Renderer->LoadRQ_2D();
     Renderer->Draw2D(ui_shader_program, (float)winSize->x / (float)winSize->y);
 
+    //swap bufs
     glfwSwapBuffers(win);
     glfwPollEvents();
 }
@@ -254,4 +294,40 @@ GLFWwindow *engine::getWindow() {
 void engine::setWindowSize(ivec2 *wSize) {
     winSize = wSize;
     glViewport(0, 0, wSize->x, wSize->y);
+    if (lFBO) createLowRes((int)(180.0f * wSize->x / wSize->y), 180);//180x180px with aspect ratio
+}
+
+void engine::createLowRes(int w, int h) {
+    if (lFBO) {
+        glDeleteFramebuffers(1, &lFBO);
+        glDeleteTextures(1, &lCol);
+        glDeleteRenderbuffers(1, &lDepth);
+    }
+
+    //set screen dims
+    lowW = w;
+    lowH = h;
+
+    //generate frame buffers
+    glGenFramebuffers(1, &lFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, lFBO);
+
+    //low quality texture
+    glGenTextures(1, &lCol);
+    glBindTexture(GL_TEXTURE_2D, lCol);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, lCol, 0);
+
+    //depth buffers
+    glGenRenderbuffers(1, &lDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, lDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, lDepth);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        err("framebuffer incomplete");
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
