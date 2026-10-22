@@ -5,11 +5,19 @@
 #include <GLFW/glfw3.h>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 using namespace glm;
 
-struct vertex {
+struct vert2d {
+    vec2 pos;
+    vec2 uv;
+};
+
+struct vert3d {
     vec3 pos;
     vec2 uv;
+    vec4 rect; //atlas tile
+    vec3 norm;
 };
 
 struct UVRect {
@@ -27,26 +35,35 @@ inline UVRect tileUV(int tx, int ty, int ATLAS_TILES = 16) {
 
 //for 2d elements
 struct quad {
-    quad(vec2 pos, vec2 size, UVRect uv = {0.0f, 0.0f, 1.0f, 1.0f}) {
+    quad(vec2 pos, vec2 size, UVRect uv = {0.0f, 0.0f, 1.0f, 1.0f}, double cTimeOffset = 0) {
         float hx = 0.5f * size.x;
         float hy = 0.5f * size.y;
 
-        verts[0] = {{ hx + pos.x,  hy + pos.y, 0.0f}, {uv.u1, uv.v1}}; // top right
-        verts[1] = {{ hx + pos.x, -hy + pos.y, 0.0f}, {uv.u1, uv.v0}}; // bottom right
-        verts[2] = {{-hx + pos.x, -hy + pos.y, 0.0f}, {uv.u0, uv.v0}}; // bottom left
-        verts[3] = {{-hx + pos.x,  hy + pos.y, 0.0f}, {uv.u0, uv.v1}}; // top left
+        verts[0] = {{ hx,  hy}, {uv.u1, uv.v1}}; // top right
+        verts[1] = {{ hx, -hy}, {uv.u1, uv.v0}}; // bottom right
+        verts[2] = {{-hx, -hy}, {uv.u0, uv.v0}}; // bottom left
+        verts[3] = {{-hx,  hy}, {uv.u0, uv.v1}}; // top left
 
-        creationTime = glfwGetTime();
+        creationTime = glfwGetTime()+cTimeOffset;
+
+        this->pos = pos;
     }
 
-    vertex verts[4];
+    vert2d verts[4];
     unsigned int idx[6] = {0, 1, 3, 1, 2, 3};
 
     unsigned int VAO = 0, VBO = 0, EBO = 0;
     unsigned int texture = 0;
+
     bool visible = true;
+
     int z = 0;
+
     double creationTime = 0;
+
+    vec2 pos;
+
+    void (*onUpdate)(quad*) = nullptr;
 
     void setUV(const UVRect& uv) {
         verts[0].uv = {uv.u1, uv.v1};
@@ -79,18 +96,26 @@ struct quad {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
 
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(vertex), (void*)offsetof(vertex, pos));
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vert2d), (void*)offsetof(vert2d, pos));
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(vertex), (void*)offsetof(vertex, uv));
+
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(vert2d), (void*)offsetof(vert2d, uv));
         glEnableVertexAttribArray(1);
 
         glBindVertexArray(0);
     }
 
+    void update() {
+        if (onUpdate != nullptr) onUpdate(this);
+    }
+
     void draw() const {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
+
         glBindVertexArray(VAO);
+        glVertexAttrib2f(2, pos.x, pos.y);
+
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
     }
@@ -102,23 +127,202 @@ struct quad {
     }
 };
 
+//for 3d elements
 struct object {
+    object(vec3 pos, vec3 size, UVRect uv = {0.0f, 0.0f, 1.0f, 1.0f}, double cTimeOffset = 0) {
+        this->pos = pos;
+        this->size = size;
+        creationTime = glfwGetTime() + cTimeOffset;
 
+        vec3 normals[6] = {
+            { 0, 0, 1}, { 0, 0,-1},   // +Z, -Z
+            { 1, 0, 0}, {-1, 0, 0},   // +X, -X
+            { 0, 1, 0}, { 0,-1, 0},   // +Y, -Y
+        };
+
+        vec3 corners[6][4] = {
+            {{-.5f,-.5f, .5f}, { .5f,-.5f, .5f}, { .5f, .5f, .5f}, {-.5f, .5f, .5f}}, // +Z
+            {{ .5f,-.5f,-.5f}, {-.5f,-.5f,-.5f}, {-.5f, .5f,-.5f}, { .5f, .5f,-.5f}}, // -Z
+            {{ .5f,-.5f, .5f}, { .5f,-.5f,-.5f}, { .5f, .5f,-.5f}, { .5f, .5f, .5f}}, // +X
+            {{-.5f,-.5f,-.5f}, {-.5f,-.5f, .5f}, {-.5f, .5f, .5f}, {-.5f, .5f,-.5f}}, // -X
+            {{-.5f, .5f, .5f}, { .5f, .5f, .5f}, { .5f, .5f,-.5f}, {-.5f, .5f,-.5f}}, // +Y
+            {{-.5f,-.5f,-.5f}, { .5f,-.5f,-.5f}, { .5f,-.5f, .5f}, {-.5f,-.5f, .5f}}, // -Y
+        };
+
+        const vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+        vec4 rect = {uv.u0, uv.v0, uv.u1 - uv.u0, uv.v1 - uv.v0};
+
+        for (int f = 0; f < 6; f++) {
+            unsigned int b = f * 4;
+            for (int c = 0; c < 4; c++) verts[b + c] = {corners[f][c], uvs[c], rect, normals[f]};
+
+            unsigned int* i = &idx[f * 6];
+            i[0] = b; i[1] = b + 1; i[2] = b + 2;
+            i[3] = b; i[4] = b + 2; i[5] = b + 3;
+        }
+        applyUVScale();
+    }
+
+    vert3d verts[24];
+    unsigned int idx[36];
+
+    vec3 size = {1, 1, 1};
+    vec3 pos = {0, 0, 0};
+    vec3 rot = {0, 0, 0};
+
+    unsigned int VAO = 0, VBO = 0, EBO = 0;
+    unsigned int texture = 0;
+
+    bool visible = true;
+    double creationTime = 0;
+
+    void (*onUpdate)(object*) = nullptr;
+
+    mat4 modelMatrix() {
+        mat4 m = translate(mat4(1.0f), pos);
+        m = rotate(m, rot.y, vec3(0, 1, 0));
+        m = rotate(m, rot.x, vec3(1, 0, 0));
+        m = rotate(m, rot.z, vec3(0, 0, 1));
+        return scale(m, size);
+    }
+
+    void setFaceUV(int face, const UVRect& uv) {
+        vec4 rect = {uv.u0, uv.v0, uv.u1 - uv.u0, uv.v1 - uv.v0};
+        unsigned int b = face * 4;
+        for (int c = 0; c < 4; c++) verts[b + c].rect = rect;
+
+        if (VBO) {
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferSubData(GL_ARRAY_BUFFER, b * sizeof(vert3d), 4 * sizeof(vert3d), &verts[b]);
+        }
+    }
+
+    void setTile(int face, int tx, int ty, int atlasTiles = 16) {
+        setFaceUV(face, tileUV(tx, ty, atlasTiles));
+    }
+
+    void create(unsigned int tex) {
+        texture = tex;
+
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+
+        glBindVertexArray(VAO);
+
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(vert3d), (void*)offsetof(vert3d, pos));
+        glEnableVertexAttribArray(0);
+
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(vert3d), (void*)offsetof(vert3d, uv));
+        glEnableVertexAttribArray(1);
+
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(vert3d), (void*)offsetof(vert3d, rect));
+        glEnableVertexAttribArray(2);
+
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(vert3d), (void*)offsetof(vert3d, norm));
+        glEnableVertexAttribArray(3);
+
+        glBindVertexArray(0);
+    }
+
+    void applyUVScale() {
+        const vec2 span[6] = {
+            {size.x, size.y}, {size.x, size.y},      // +Z, -Z
+            {size.z, size.y}, {size.z, size.y},  // +X, -X
+            {size.x, size.z}, {size.x, size.z},  // +Y, -Y
+        };
+
+        const vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+
+        for (int f = 0; f < 6; f++) {
+            for (int c = 0; c < 4; c++) {
+                verts[f * 4 + c].uv = uvs[c] * span[f];
+            }
+        }
+
+        if (VBO) {
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+        }
+    }
+
+    void update() {
+        if (onUpdate != nullptr) onUpdate(this);
+    }
+
+    // renderer sets the umodel unif prior
+    void draw() const {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+    }
+
+    void destroy() {
+        glDeleteVertexArrays(1, &VAO);
+        glDeleteBuffers(1, &VBO);
+        glDeleteBuffers(1, &EBO);
+        VAO = VBO = EBO = 0;
+    }
+};
+
+struct camera {
+    vec3 pos = {0,0,0};
+
+    float yaw = -90.0f;
+    float pitch = -70.0f;
+    float fov = 70.0f;
+
+    float nearp = 0.1f;
+    float farp = 100.0f;
+
+    vec3 foward() {
+        float y = radians(yaw);
+        float p = radians(pitch);
+        return normalize(vec3(cos(y) * cos(p), sin(p), sin(y) * cos(p)));
+    }
+
+    vec3 right() {
+        return normalize(cross(foward(), vec3(0, 1, 0)));
+    }
+
+    mat4 view() {
+        return lookAt(pos, pos + foward(), vec3(0, 1, 0));
+    }
+
+    mat4 proj(float aspect) {
+        return perspective(radians(fov), aspect, nearp, farp);
+    }
 };
 
 class renderer {
 public:
+    camera cam;
+
     //2d renderer functions
     quad& GetNextFromRQ_2D();
     void LoadRQ_2D();
     void AddToRQ_2D(quad& quad);
+    std::vector<quad*> GetRQ_2D();
+    void Draw2D(unsigned int program, float aspect);
 
-    //3d renderer functions, TBI
-    quad& GetNextFromRQ_M();
+    //3d renderer functions
+    object& GetNextFromRQ_M();
     void LoadRQ_M();
     void AddToRQ_M(object& obj);
+    void Draw3D(unsigned int program, float aspect);
+    std::vector<object*> GetRQ_3D();
 
-    std::vector<quad*> GetRQ();
+    std::vector<quad*> GetAll2D() {return quads;}
+    std::vector<object*> GetAll3D() {return objects;}
 private:
     //for 2d elements
     std::vector<quad*> quads;

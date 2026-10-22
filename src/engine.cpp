@@ -19,22 +19,39 @@ void framebuffer_size_callback(GLFWwindow* win, int width, int height) {
     eng->setWindowSize(new ivec2(width, height));
 }
 
+void handle_input(engine* e) {
+    GLFWwindow* win = e->getWindow();
+
+    if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(win, true);
+
+    double delta = e->getDelta();
+    double speed = 1.00;
+
+    if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) e->Renderer->cam.pos += vec3(0,0,-speed*delta);
+    if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) e->Renderer->cam.pos += vec3(-speed*delta,0,0);
+    if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) e->Renderer->cam.pos += vec3(0,0,speed*delta);
+    if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) e->Renderer->cam.pos += vec3(speed*delta,0,0);
+}
+
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f) {
     std::vector<quad*> ret;
     int x = 0;
     float sc = 0.1f * scale;
     float spacing = 0.05f * scale;
 
+    float startX = pos.x - 0.5f * (str.size() - 1) * spacing;
+
     for (const char& c : str) {
-        x++;
         int baseIndex = static_cast<unsigned char>(c);
 
         int col = baseIndex % 16;
         int row = baseIndex / 16;
 
-        quad* q = new quad({(float)x*spacing + pos.x, pos.y}, {sc, sc}, tileUV(col, row));
+        quad* q = new quad({startX + (float)x * spacing, pos.y}, {sc, sc}, tileUV(col, row));
         q->create(fontAtlas);
         ret.push_back(q);
+
+        x++;
     }
 
     return ret;
@@ -105,10 +122,10 @@ int engine::init() {
 
     int  mlsucc;
     char mlinfoLog[512];
-    glGetProgramiv(ui_shader_program, GL_LINK_STATUS, &mlsucc);
+    glGetProgramiv(m_shader_program, GL_LINK_STATUS, &mlsucc);
     if(!mlsucc) {
-        glGetProgramInfoLog(ui_shader_program, 512, NULL, mlinfoLog);
-        err(("Failed to link shaders: " + std::to_string(*mlinfoLog)).c_str());
+        glGetProgramInfoLog(m_shader_program, 512, NULL, mlinfoLog);
+        err((to_string(*"Failed to link MAIN shaders: ") + mlinfoLog).c_str());
         return -1;
     }
 
@@ -117,14 +134,16 @@ int engine::init() {
     glGetProgramiv(ui_shader_program, GL_LINK_STATUS, &ulsucc);
     if(!ulsucc) {
         glGetProgramInfoLog(ui_shader_program, 512, NULL, ulinfoLog);
-        err(("Failed to link shaders: " + std::to_string(*ulinfoLog)).c_str());
+        err((to_string(*"Failed to link UI shaders: ") + ulinfoLog).c_str());
         return -1;
     }
 
     glDeleteShader(ui_vertShader);
     glDeleteShader(ui_fragShader);
+    glDeleteShader(m_vertShader);
+    glDeleteShader(m_fragShader);
 
-    m_texture_atlas = loadTexture("res/noTexture.png");//noTexture.png is temporary
+    m_texture_atlas = loadTexture("res/mainAtlas.png");
     m_font_atlas = loadTexture("res/FontAtlas.png");
     if (!m_texture_atlas) { err("Failed to load main Texture Atlas"); return -1; }
     if (!m_font_atlas) { err("Failed to load font Texture Atlas"); return -1; }
@@ -137,53 +156,43 @@ int engine::init() {
 
     Renderer = new renderer();
 
-    //test the font atlas
-    for (auto q : StrToUI(m_font_atlas, {-1, 0}, "Hello World", 1.5f)) {
+    //title screen
+    int i=0;
+    for (auto q : StrToUI(m_font_atlas, {0, 0.7f}, "Dungeon Crawler", 1.5f)) {
+        i++;
+        q->creationTime-=0.05f*i;
+
+        q->onUpdate = [](quad* q) -> void {
+            double t = glfwGetTime() - q->creationTime;
+            q->pos = vec2(q->pos.x, q->pos.y+sin(t)/30000);
+        };
+
         Renderer->AddToRQ_2D(*q);
     }
 
-    //load them to the queue
-    Renderer->LoadRQ_2D();
+    //test cube
+    object* o = new object({0,-3,0}, {1,1,1}, tileUV(0,0));
+    o->create(m_texture_atlas);
+    Renderer->AddToRQ_M(*o);
 
     info("Initialized Successfully.");
     return 0;
 }
 
-/*
-    //create test quads for rendering
-
-    for (int i=10; i > 0; i--) {
-        quad* q = new quad({0.0f, 0.0f}, {0.5f, 0.5f}, tileUV(3, 2));
-        q->z = i;
-        q->create(m_texture_atlas);
-        Renderer->AddToRQ(*q);
-    }
-
-    //load them to the queue
-    Renderer->LoadRQ();
-
-    //test if they were added correctly
-    for (auto q : Renderer->GetRQ()) {
-        info(to_string(q->z).c_str());
-    }
- */
-
 //should NOT be called outside of the loop function
 void engine::render() {
     glClearColor(0.2f, 0.3f, 0.5f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(m_shader_program);
 
-    //load 3d elements
+    Renderer->LoadRQ_M();
+    Renderer->Draw3D(m_shader_program, (float)winSize->x / (float)winSize->y);
 
     glUseProgram(ui_shader_program);
 
-    //draw ui elements ontop
-
-    for (auto q : Renderer->GetRQ()) {
-        q->draw();
-    }
+    Renderer->LoadRQ_2D();
+    Renderer->Draw2D(ui_shader_program, (float)winSize->x / (float)winSize->y);
 
     glfwSwapBuffers(win);
     glfwPollEvents();
@@ -193,6 +202,11 @@ void engine::render() {
 void engine::update() {
     framecount++;
     double frameT = glfwGetTime();
+
+    handle_input(this);
+
+    for (auto q : Renderer->GetAll3D()) {if (q->visible) q->update();}
+    for (auto q : Renderer->GetAll2D()) {if (q->visible) q->update();}
 
     if (frameT > lastFUpdate + 1) {
         lastFUpdate = frameT;
