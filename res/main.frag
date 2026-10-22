@@ -15,13 +15,13 @@ uniform vec3  uLightPos[MAX_LIGHTS];
 uniform vec3  uLightColor[MAX_LIGHTS];   // color * intensity
 uniform float uLightRadius[MAX_LIGHTS];
 
-uniform vec3 ambient;
+uniform vec3 uAmbient;
 
 void main() {
     vec2 uv = tileRect.xy + fract(localUV) * tileRect.zw;
     vec4 albedo = texture(tex, uv);
 
-    vec3 lit = ambient;
+    vec3 lit = uAmbient;
     vec3 n = normalize(normal);
 
     for(int i=0; i < uNumLights; i++) {

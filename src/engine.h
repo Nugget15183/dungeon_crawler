@@ -32,6 +32,8 @@ public:
     void createLowRes(int w, int h);
 
     renderer* Renderer;
+    unsigned int m_texture_atlas;
+    unsigned int m_font_atlas;
 private:
     GLFWwindow* win;
     ivec2* winSize = new ivec2(800, 600);
@@ -47,9 +49,7 @@ private:
 
     unsigned int m_shader_program;
     unsigned int ui_shader_program;
-
-    unsigned int m_texture_atlas;
-    unsigned int m_font_atlas;
+    unsigned int p_shader_program;
 
     unsigned int lFBO = 0, lCol = 0, lDepth = 0;
     int lowW = 0, lowH = 0;

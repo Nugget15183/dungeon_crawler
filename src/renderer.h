@@ -132,6 +132,25 @@ struct quad {
     }
 };
 
+//data
+struct Particle {
+    vec2 pos{0.0f}, vel{0.0f}, accel{0.0f};
+    vec4 col={1.0f,1.0f,1.0f,1.0f};
+    vec4 colEnd={1.0f,1.0f,1.0f,1.0f};
+    float size = 0.02f, sizeEnd = 0.0f;
+    float life=0.0f;
+    float maxLife=1.0f;
+    float emissive=0.0f;
+};
+
+//sent to gpu
+struct ParticleInst {
+    vec2 pos;
+    float size;
+    vec4 col;
+    float emissive;
+};
+
 //for 3d elements
 struct object {
     object(vec3 pos, vec3 size, UVRect uv = {0.0f, 0.0f, 1.0f, 1.0f}, double cTimeOffset = 0) {
@@ -337,6 +356,12 @@ public:
     std::vector<quad*> GetAll2D() {return quads;}
     std::vector<object*> GetAll3D() {return objects;}
     void AddLight(light& l) { lights.push_back(&l); }
+
+    void InitParticles(size_t capacity = 4096);
+    void EmitParticle(const Particle& p);
+    void UpdateParticles(float dt);
+    void DrawParticles(unsigned int program, float aspect);
+    void DestroyParticles();
 private:
     //for 2d elements
     std::vector<quad*> quads;
@@ -346,6 +371,12 @@ private:
     std::vector<object*> objects;
     std::vector<object*> m_render_queue;
     std::vector<light*> lights;
+
+    //particles
+    std::vector<Particle> particles;
+    std::vector<ParticleInst> pInst;
+    size_t pNext = 0;
+    unsigned int pVAO = 0, pQuadVBO = 0, pInstVBO = 0;
 };
 
 

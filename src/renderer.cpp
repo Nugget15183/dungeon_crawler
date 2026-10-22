@@ -125,3 +125,142 @@ void renderer::Draw3D(unsigned int program, float aspect) {
         o->draw();
     }
 }
+
+//particles
+
+void renderer::InitParticles(size_t capacity) {
+    particles.assign(capacity, Particle());
+    pInst.reserve(capacity);
+
+    //quad mesh
+    const vec2 corners[4] = {{-.5f,-.5f}, {.5f,-.5f}, {-.5f,.5f}, {.5f,.5f}};
+
+    //gen buffers
+    glGenVertexArrays(1, &pVAO);
+    glGenBuffers(1, &pQuadVBO);
+    glGenBuffers(1, &pInstVBO);
+    glBindVertexArray(pVAO);
+
+    //per vert
+    glBindBuffer(GL_ARRAY_BUFFER, pQuadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(corners), corners, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vec2), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    //per inst
+    glBindBuffer(GL_ARRAY_BUFFER, pInstVBO);
+    glBufferData(GL_ARRAY_BUFFER, capacity*sizeof(ParticleInst), nullptr, GL_STREAM_DRAW);
+
+    //vertex attribs
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(ParticleInst), (void*)offsetof(ParticleInst, pos));
+    glEnableVertexAttribArray(1);
+    glVertexAttribDivisor(1, 1);
+
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleInst), (void*)offsetof(ParticleInst, size));
+    glEnableVertexAttribArray(2);
+    glVertexAttribDivisor(2, 1);
+
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(ParticleInst), (void*)offsetof(ParticleInst, col));
+    glEnableVertexAttribArray(3);
+    glVertexAttribDivisor(3, 1);
+
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleInst), (void*)offsetof(ParticleInst, emissive));
+    glEnableVertexAttribArray(4);
+    glVertexAttribDivisor(4, 1);
+
+    //unbind the vao
+    glBindVertexArray(0);
+}
+
+void renderer::EmitParticle(const Particle &p) {
+    //find empty particle slot
+    //if full then drop the particle
+    for (size_t i = 0; i < particles.size(); i++) {
+        size_t idx = (pNext+i) % particles.size();
+        if (particles[idx].life <= 0.0f) {
+            particles[idx] = p;
+            particles[idx].life = particles[idx].maxLife = std::max(p.maxLife, 0.0001f);
+            pNext = (idx + 1) % particles.size();
+            return;
+        }
+    }
+}
+
+void renderer::UpdateParticles(float dt) {
+    pInst.clear();
+
+    for (auto &p : particles) {
+        if (p.life <= 0.0f) continue;
+        p.life -= dt;
+        if (p.life <= 0.0f) continue;
+
+        p.vel += p.accel * dt;
+        p.pos += p.vel * dt;
+
+        float t = 1.0f - p.life / p.maxLife; //0 - 1 over lifetime
+        pInst.push_back({ p.pos, mix(p.size, p.sizeEnd, t), mix(p.col, p.colEnd, t), p.emissive });
+    }
+}
+
+void renderer::DrawParticles(unsigned int program, float aspect) {
+    if (pInst.empty()) return;
+
+    //enable correct shader program, set unifs
+    glUseProgram(program);
+    glUniform1f(glGetUniformLocation(program, "uAspect"), aspect);
+
+    const int MAX_LIGHTS = 16;
+    vec2 lpos[MAX_LIGHTS];
+    vec3 lcol[MAX_LIGHTS];
+    float lrad[MAX_LIGHTS];
+
+    int n=0;
+
+    mat4 vp = cam.proj(aspect)*cam.view();
+    float tanHalf = tan(radians(cam.fov)*0.5f);
+
+    for (auto &l : lights) {
+        //is light enabled?
+        if (!l->enabled || n > MAX_LIGHTS) continue;
+
+        //is the light out of view?
+        vec4 clip = vp * vec4(l->pos, 1.0f);
+        if (clip.w <= 0.0f) continue;
+
+        //store light values
+        lpos[n] = vec2(clip.x, clip.y) / clip.w;
+        lrad[n] = l->radius / (clip.w*tanHalf);
+        lcol[n] = l->color * l->intensity;
+
+        n++;
+    }
+
+    //set light values in uniform
+    glUniform1i(glGetUniformLocation(program, "uNumLights"), n);
+    if (n > 0) {
+        glUniform2fv(glGetUniformLocation(program, "uLightPos"),    n, value_ptr(lpos[0]));
+        glUniform3fv(glGetUniformLocation(program, "uLightColor"),  n, value_ptr(lcol[0]));
+        glUniform1fv(glGetUniformLocation(program, "uLightRadius"), n, lrad);
+    }
+    glUniform3f(glGetUniformLocation(program, "uAmbient"), 0.05f, 0.05f, 0.08f);
+
+    //disable 3d rendering specific settings
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+
+    //bind vao and draw instanced
+    glBindVertexArray(pVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, pInstVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, pInst.size()*sizeof(ParticleInst), pInst.data());
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)pInst.size());
+
+    //unbind vao
+    glBindVertexArray(0);
+}
+
+void renderer::DestroyParticles() {
+    glDeleteVertexArrays(1, &pVAO);
+    glDeleteBuffers(1, &pQuadVBO);
+    glDeleteBuffers(1, &pInstVBO);
+    pVAO = pQuadVBO = pInstVBO = 0;
+}

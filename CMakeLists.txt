@@ -29,7 +29,8 @@ add_executable(dungeoncrawler src/main.cpp
         src/renderer.h
         src/logger.h
         src/util.h
-        src/stb_image.h)
+        src/stb_image.h
+        src/tiny_obj_loader.h)
 
 #link libraries to the executable
 target_link_libraries(dungeoncrawler PRIVATE
