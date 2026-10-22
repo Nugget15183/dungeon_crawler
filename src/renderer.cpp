@@ -86,6 +86,27 @@ std::vector<object*> renderer::GetRQ_3D() {
 void renderer::Draw3D(unsigned int program, float aspect) {
     glUseProgram(program);
 
+    const int MAX_LIGHTS = 16;
+    vec3 pos[MAX_LIGHTS], col[MAX_LIGHTS];
+    float rad[MAX_LIGHTS];
+    int n = 0;
+
+    for (auto* l : lights) {
+        if (!l->enabled || n >= MAX_LIGHTS) continue;
+        pos[n] = l->pos;
+        col[n] = l->color * l->intensity;
+        rad[n] = l->radius;
+        n++;
+    }
+
+    glUniform1i(glGetUniformLocation(program, "uNumLights"), n);
+    if (n > 0) {
+        glUniform3fv(glGetUniformLocation(program, "uLightPos"), n, value_ptr(pos[0]));
+        glUniform3fv(glGetUniformLocation(program, "uLightColor"), n, value_ptr(col[0]));
+        glUniform1fv(glGetUniformLocation(program, "uLightRadius"), n, rad);
+    }
+    glUniform3f(glGetUniformLocation(program, "uAmbient"), 0.05f, 0.05f, 0.08f);
+
     mat4 viewProj = cam.proj(aspect) * cam.view();
     int locVP = glGetUniformLocation(program, "uViewProj");
     int locModel = glGetUniformLocation(program, "uModel");

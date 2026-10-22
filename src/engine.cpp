@@ -13,25 +13,6 @@
 using namespace util;
 using namespace logger;
 
-void framebuffer_size_callback(GLFWwindow* win, int width, int height) {
-    engine* eng = static_cast<engine*>(glfwGetWindowUserPointer(win));
-
-    eng->setWindowSize(new ivec2(width, height));
-}
-
-void handle_input(engine* e) {
-    GLFWwindow* win = e->getWindow();
-
-    if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(win, true);
-
-    double delta = e->getDelta();
-    double speed = 1.00;
-
-    if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) e->Renderer->cam.pos += vec3(0,0,-speed*delta);
-    if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) e->Renderer->cam.pos += vec3(-speed*delta,0,0);
-    if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) e->Renderer->cam.pos += vec3(0,0,speed*delta);
-    if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) e->Renderer->cam.pos += vec3(speed*delta,0,0);
-}
 
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f) {
     std::vector<quad*> ret;
@@ -55,6 +36,26 @@ std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, fl
     }
 
     return ret;
+}
+
+void framebuffer_size_callback(GLFWwindow* win, int width, int height) {
+    engine* eng = static_cast<engine*>(glfwGetWindowUserPointer(win));
+
+    eng->setWindowSize(new ivec2(width, height));
+}
+
+void handle_input(engine* e) {
+    GLFWwindow* win = e->getWindow();
+
+    if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(win, true);
+
+    double delta = e->getDelta();
+    double speed = 2.00;
+
+    if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) e->Renderer->cam.pos += vec3(0,0,-speed*delta);
+    if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) e->Renderer->cam.pos += vec3(-speed*delta,0,0);
+    if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) e->Renderer->cam.pos += vec3(0,0,speed*delta);
+    if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) e->Renderer->cam.pos += vec3(speed*delta,0,0);
 }
 
 int engine::init() {
@@ -170,10 +171,30 @@ int engine::init() {
         Renderer->AddToRQ_2D(*q);
     }
 
-    //test cube
-    object* o = new object({0,-3,0}, {1,1,1}, tileUV(0,0));
-    o->create(m_texture_atlas);
-    Renderer->AddToRQ_M(*o);
+    //test area
+    vector<object*> objs = {
+        //floor
+        new object({0,-3.5f,0}, {10,1,10}, tileUV(0,0)),
+        //walls
+        new object({5,-2.5f,0}, {1,1,9}, tileUV(0,0)),
+        new object({-5,-2.5f,0}, {1,1,9}, tileUV(0,0)),
+        new object({0,-2.5f,5}, {9,1,1}, tileUV(0,0)),
+        new object({0,-2.5f,-5}, {9,1,1}, tileUV(0,0)),
+        //corners
+        new object({5,-2.5f,5}, {1,1,1}, tileUV(0,0)),
+        new object({-5,-2.5f,-5}, {1,1,1}, tileUV(0,0)),
+        new object({5,-2.5f,5}, {1,1,1}, tileUV(0,0)),
+        new object({-5,-2.5f,-5}, {1,1,1}, tileUV(0,0)),
+    };
+
+    for (auto o : objs) {
+        o->create(m_texture_atlas);
+        Renderer->AddToRQ_M(*o);
+    }
+
+    light* torch = new light(object({0,-2.5f,0}, {.5f,.5f,.5f}, tileUV(0,0)));
+    torch->create(m_texture_atlas);
+    Renderer->AddLight(*torch);
 
     info("Initialized Successfully.");
     return 0;
@@ -181,7 +202,7 @@ int engine::init() {
 
 //should NOT be called outside of the loop function
 void engine::render() {
-    glClearColor(0.2f, 0.3f, 0.5f, 0.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(m_shader_program);

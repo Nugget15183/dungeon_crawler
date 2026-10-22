@@ -274,6 +274,14 @@ struct object {
     }
 };
 
+struct light : object {
+    light(const object& o) : object(o) {}
+    float intensity = 1.0f;
+    float radius = 8.0f;
+    vec3 color = {1.0f, 0.8f, 0.5f}; //orange
+    bool enabled = true;
+};
+
 struct camera {
     vec3 pos = {0,0,0};
 
@@ -323,6 +331,7 @@ public:
 
     std::vector<quad*> GetAll2D() {return quads;}
     std::vector<object*> GetAll3D() {return objects;}
+    void AddLight(light& l) { lights.push_back(&l); }
 private:
     //for 2d elements
     std::vector<quad*> quads;
@@ -331,6 +340,7 @@ private:
     //for 3d elements
     std::vector<object*> objects;
     std::vector<object*> m_render_queue;
+    std::vector<light*> lights;
 };
 
 

@@ -10,11 +10,15 @@ uniform mat4 uViewProj;
 out vec2 localUV;
 flat out vec4 tileRect;
 out vec3 normal;
+out vec3 fragPos;
 
 void main() {
     gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
     localUV = aUV;
     tileRect = aRect;
+
+    vec4 world = uModel * vec4(aPos, 1.0);
+    fragPos = world.xyz;
 
     //note: move to cpu later as a uniform
     //keep normals perpendiclar when under nonuniform scales
