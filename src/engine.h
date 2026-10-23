@@ -60,9 +60,14 @@ public:
     renderer* Renderer;
     unsigned int m_texture_atlas;
     unsigned int m_font_atlas;
+
     vec2 mousePos = {0,0};
+
     bool mouseWasDown = false;
+    bool isMoving = false;
+
     gameState state = MAIN_MENU;
+    lightingSetting lighting_setting = OUTSIDE;
 private:
     GLFWwindow* win;
     ivec2* winSize = new ivec2(800, 600);

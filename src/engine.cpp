@@ -1,12 +1,15 @@
 #include "engine.h"
 
 #include <string>
+#include <cmath>
+#include <algorithm>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
 #include "stb_image.h"
 
 #include "util.h"
+#include "dungeon.h"
 #include <random>
 #include <utility>
 
@@ -14,15 +17,12 @@
 todo list
 3d
 custom model loading
-player movement
-dungeon generation
-spawn animation (cave collapse, trapping player in first room)
+player movement           (started: top-down wasd + tile collision, camera follows the 2d player)
+dungeon generation        (started: room + corridor generator in dungeon.h, built when Begin is pressed)
+spawn animation (cave collapse, trapping player in first room)   (started: see updateIntro)
 
 2D
-title menu
 settings
-
-
  */
 
 using namespace util;
@@ -31,6 +31,55 @@ using namespace logger;
 //random class, used for particle randomness
 static std::mt19937 rng{std::random_device{}()};
 static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)(rng); }
+
+//global vars
+namespace {
+    //title screen
+    const float titleBobAmp = 0.01f;
+
+    //world
+    const float floorY = -3.5f; //center of the floor blocks
+    const float floorTop = floorY + 0.5f;
+    const int wallH = 3; //in blocks
+    const int hallWidth = 3; //in tiles
+
+    //player
+    const float walkSpeed = 2.0f;
+    const float sprintSpeed = 4.0f;
+    const float playerRadius = 0.125f; //collision half width
+
+    //spawn intro (times are in seconds since Begin was pressed)
+    const float introFallStart = 0.9f; //player starts falling
+    const float introFallTime = 0.7f;
+    const float introFallFrom = 1.3f; //screen y the player falls from
+    const float introLandT = introFallStart + introFallTime;
+    const float introCaveStart = 2.3f; //rocks start falling and the hole closes
+    const float introCaveTime = 1.2f;
+    const float introEnd = 3.9f; //player gets control
+    const float holeY = 0.6f; //where the hole in the ceiling is on screen
+
+    //things the title screen made
+    std::vector<object*> titleObjs;
+    std::vector<quad*> titleQuads;
+
+    //dungeon + player
+    dungeon::Map dungeonMap;
+    bool inDungeon = false;
+    vec2 playerPos = {0, 0}; //where the player stands on the floor, x = world x, y = world z
+    vec2 camShake = {0, 0}; //world units, added on top of the camera follow
+    quad* playerSprite = nullptr;
+    light* playerLight = nullptr; //follows the camera
+    bool facingLeft = false;
+
+    //intro state
+    bool introActive = false;
+    bool introLanded = false;
+    bool introRubble = false;
+    double introStart = 0;
+    light* beamLight = nullptr; //the light shining down through the hole
+
+    std::vector<quad*> introRocks; //rocks falling down the shaft
+}
 
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f, int z=0) {
     std::vector<quad*> ret;
@@ -80,8 +129,215 @@ void spawnParticles(renderer* r, vec2 origin, vec2 direction, vec2 dir_variance,
 
 vec2 safeNorm(vec2 vec) {
     if (length(vec)<=0) return vec2(0,0);
-
     return normalize(vec);
+}
+
+bool canStand(float x, float z) {
+    if (!inDungeon) return true;
+
+    for (float dx : {-playerRadius, playerRadius}) {
+        for (float dz : {-playerRadius, playerRadius}) {
+            if (!dungeonMap.isFloor((int)std::floor(x + dx), (int)std::floor(z + dz))) return false;
+        }
+    }
+    return true;
+}
+
+void syncCamera(engine* e) {
+    camera& c = e->Renderer->cam;
+
+    vec3 f = c.foward();
+    float t = (floorTop - c.pos.y) / f.y;
+
+    c.pos.x = playerPos.x - f.x * t + camShake.x;
+    c.pos.z = playerPos.y - f.z * t + camShake.y;
+}
+
+void buildDungeon(engine* e, const dungeon::Map& map) {
+    auto addBlock = [&](vec3 pos, auto uv) {
+        object* o = new object(pos, {1, 1, 1}, uv);
+        o->create(e->m_texture_atlas);
+        e->Renderer->AddToRQ_M(*o);
+    };
+
+    for (int y = 0; y < map.h; y++) {
+        for (int x = 0; x < map.w; x++) {
+            //tile (x, y) is world (x, z=y), blocks are centered so offset by .5
+            if (map.isFloor(x, y)) {
+                addBlock({x + 0.5f, floorY, y + 0.5f}, tileUV(0, 0));
+            } else if (map.touchesFloor(x, y)) {
+                //only walls next to floor get built, the rest would never be seen
+                for (int h = 0; h < wallH; h++) {
+                    addBlock({x + 0.5f, floorY + h, y + 0.5f}, tileUV(0, 0));
+                }
+            }
+        }
+    }
+}
+
+void hideButton(button* b) {
+    b->visible = false;
+    for (auto t : b->textQuads) t->visible = false;
+}
+
+//rocks that fall from the ceiling and stay on the floor around the player
+void spawnRubble(engine* e) {
+    for (int i = 0; i < 10; i++) {
+        float ang = rnd(0.0f, 6.28f);
+        float dist = rnd(0.6f, 1.5f);
+        float x = playerPos.x + std::cos(ang) * dist;
+        float z = playerPos.y + std::sin(ang) * dist;
+        if (!canStand(x, z)) continue;//only land on the floor
+
+        float s = rnd(0.12f, 0.3f);
+        float landY = floorTop + s * 0.5f;
+
+        //creationTime is used as the random fall delay
+        object* o = new object({x, 0.5f, z}, {s, s, s}, tileUV(0, 0), rnd(0.0f, 0.5f));
+        o->rot = {rnd(0.0f, 3.14f), rnd(0.0f, 3.14f), rnd(0.0f, 3.14f)};
+        o->visible = false;
+        o->create(e->m_texture_atlas);
+
+        o->onUpdate = [e, landY, vy = 0.0f](object* self) mutable -> void {
+            if (glfwGetTime() < self->creationTime || self->pos.y <= landY) return;
+
+            float delta = (float)e->getDelta();
+            self->visible = true;
+            vy += 9.8f * delta;
+            self->pos.y = std::max(self->pos.y - vy * delta, landY);
+        };
+
+        e->Renderer->AddToRQ_M(*o);
+    }
+}
+
+//the light shaft, the rocks that fall down it and the rocks that plug the hole
+void createIntro(engine* e) {
+    //point light above the player, the pool of light on the floor
+    beamLight = new light(object({0,0,0}, {.5f,.5f,.5f}, tileUV(0,0)));
+    beamLight->visible = false;
+    beamLight->pos = vec3(playerPos.x, floorY + 2.0f, playerPos.y);
+    beamLight->color = {1.0f, 0.95f, 0.8f};
+    beamLight->radius = 6.0f;
+    beamLight->intensity = 0.0f;
+    e->Renderer->AddLight(*beamLight);
+}
+
+//update function but only for intro
+void updateIntro(engine* e) {
+    float t = (float)(glfwGetTime() - introStart);
+
+    //sun getting cutoff
+    float closing = std::clamp((t - introCaveStart) / introCaveTime, 0.0f, 1.0f);
+    float beam = std::clamp(t / 0.8f, 0.0f, 1.0f) * (1.0f - closing);
+    beamLight->intensity = 1.5f * beam;
+
+    //player falling
+    if (t >= introFallStart) {
+        float s = std::clamp((t - introFallStart) / introFallTime, 0.0f, 1.0f);
+        playerSprite->visible = true;
+        playerSprite->pos.y = introFallFrom * (1.0f - s * s);//speeds up as it falls
+    }
+
+    //landing
+    if (!introLanded && t >= introLandT) {
+        introLanded = true;
+
+        spawnParticles(
+            e->Renderer,
+            {0,-.2f},
+            vec2(0.0f, 0.1f),
+            vec2(-.8f, .8f),
+            vec2(0, -0.5f),
+            vec4(0.41f, 0.39f, 0.32f, 1.0f),
+            vec4(0.08f, 0.08f, 0.04f, 0.0f),
+            vec2(0.02f, 0.04f),
+            vec2(0.0f, 0.01f),
+            vec2(0.4f, 0.9f),
+            30
+        );
+    }
+
+    //camera shake
+    float shake = 0.0f;
+    if (t >= introLandT) shake = 0.12f * std::exp(-(t - introLandT) * 8.0f);
+    if (t >= introCaveStart && t < introCaveStart + introCaveTime) shake = std::max(shake, 0.03f);
+    camShake = shake > 0.001f ? vec2(rnd(-shake, shake), rnd(-shake, shake)) : vec2(0, 0);
+
+    //cave in
+    if (t >= introCaveStart) {
+        if (!introRubble) {
+            introRubble = true;
+            spawnRubble(e);
+        }
+
+        //dust shaking
+        if (rnd(0.0f, 1.0f) < 0.5f) {
+            spawnParticles(
+                e->Renderer,
+                {rnd(-.12f, 2), holeY},
+                vec2(0.0f, -0.2f),
+                vec2(-.1f, .1f),
+                vec2(0, -0.3f),
+                vec4(0.41f, 0.39f, 0.32f, 1.0f),
+                vec4(0.08f, 0.08f, 0.04f, 0.0f),
+                vec2(0.02f, 0.1f),
+                vec2(0.0f, 0.01f),
+                vec2(0.3f, 0.6f),
+                1
+            );
+        }
+
+        //rocks falling
+        for (size_t i = 0; i < introRocks.size(); i++) {
+            float dt = t - (introCaveStart + i * 0.07f);
+            float y = holeY - 0.5f * 2.5f * dt * dt;
+
+            introRocks[i]->pos.y = y;
+            introRocks[i]->visible = dt >= 0 && y > -0.2f;//gone once it hits the floor
+        }
+
+        //the player's light
+        playerLight->intensity = std::clamp((t - (introCaveStart + 0.6f)) / 1.0f, 0.0f, 1.0f);
+    }
+
+    //give the player control
+    if (t >= introEnd) {
+        beamLight->enabled = false;
+        playerLight->intensity = 1.0f;
+        playerSprite->pos.y = 0;
+        camShake = {0, 0};
+        introActive = false;
+    }
+}
+
+void startGame(engine* e) {
+    //hide the title screen
+    for (auto q : titleQuads) q->visible = false;
+    for (auto o : titleObjs) o->visible = false;
+
+    //generate + build the dungeon
+    dungeonMap = dungeon::generate(48, 48, 12, std::random_device{}(), hallWidth);
+    buildDungeon(e, dungeonMap);
+    inDungeon = true;
+
+    //put the player in the center of the first room
+    const dungeon::Room& first = dungeonMap.rooms.front();
+    playerPos = {first.cx() + 0.5f, first.cy() + 0.5f};
+    syncCamera(e);
+
+    //spawn intro, the player falls in and the hole caves over
+    createIntro(e);
+    introStart = glfwGetTime();
+    introActive = true;
+    introLanded = false;
+    introRubble = false;
+    e->isMoving = false;
+    playerSprite->visible = false;//shows up when it starts falling
+    playerLight->intensity = 0.0f;//only the beam lights the room at first
+
+    e->lighting_setting = DUNGEON;
+    e->state = IN_GAME;
 }
 
 void handle_input(engine* e) {
@@ -91,27 +347,46 @@ void handle_input(engine* e) {
 
     if (e->state!=IN_GAME) return;
 
-    double delta = e->getDelta();
-    double speed = 2.00;
+    //no movement while the intro plays
+    if (introActive) {
+        updateIntro(e);
+        syncCamera(e);
+        return;
+    }
+
+    float delta = (float)std::min(e->getDelta(), 0.1);//clamp so a hitch cant push you through a wall
+    float speed = walkSpeed;
+
+    if (glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) speed = sprintSpeed;
 
     vec2 walkDir = {0,0};
-    if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) walkDir.y=-1;
-    if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) walkDir.x=-1;
-    if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) walkDir.y=1;
-    if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) walkDir.x=1;
+    if (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS) walkDir.x += 1;
+    if (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS) walkDir.x -= 1;
+    if (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS) walkDir.y -= 1;
+    if (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS) walkDir.y += 1;
 
+    e->isMoving = length(walkDir)>0;
     walkDir=safeNorm(walkDir);
 
-    e->Renderer->cam.pos += vec3(walkDir.x*speed*delta,0,walkDir.y*speed*delta);
+    if (walkDir.y < 0) facingLeft = true;
+    else if (walkDir.y > 0) facingLeft = false;
 
-    if (length(walkDir)>0) {
+    if (e->isMoving) {
+        float yaw = radians(e->Renderer->cam.yaw);
+        vec2 up(std::cos(yaw), std::sin(yaw));
+        vec2 right(-std::sin(yaw), std::cos(yaw));
+        vec2 step = (up * walkDir.x + right * walkDir.y) * (speed * delta);
+
+        if (canStand(playerPos.x + step.x, playerPos.y)) playerPos.x += step.x;
+        if (canStand(playerPos.x, playerPos.y + step.y)) playerPos.y += step.y;
+
         spawnParticles(
             e->Renderer,
-            {0,-.3f},
-            walkDir*vec2(-1,1)+vec2(0.0,0.2f),
+            {0,-.15f},
+            vec2(walkDir.y, walkDir.x)*vec2(-1,-1)+vec2(0.0,0.2f),
             vec2(-.5f, .5f),
             vec2(0, -1.0f),
-            vec4(0.41f, 0.39f, 0.32f, 1.0f),
+            vec4(0.61f, 0.59f, 0.52f, 1.0f),
             vec4(0.08f, 0.08f, 0.04f, 1.0f),
             vec2(0.01f, 0.01f),
             vec2(0.0f, 0.01f),
@@ -119,10 +394,12 @@ void handle_input(engine* e) {
             1
         );
     }
+
+    syncCamera(e);
 }
 
 void updateUI(engine* e) {
-    //handle ui updates before buttons
+    //handle ui updates
     e->Renderer->UpdateParticles((float)std::min(e->getDelta(), 0.1));//clamp so particles dont explode
     for (auto q : e->Renderer->GetAll2D()) {if (q->visible) q->update();}
 
@@ -171,25 +448,30 @@ void updateUI(engine* e) {
     }
 }
 
-void createButton(engine* e, vec2 pos, vec2 size, string text, float textScale=1.0f, std::function<void(button*)> onClick=nullptr, std::function<void(button*)>onMouseEnter=nullptr, std::function<void(button*)>onMouseExit=nullptr) {
-    button* start = new button(quad(pos, size, tileUV(1, 0)));
+void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textScale=1.0f, std::function<void(button*)> onClick=nullptr, std::function<void(button*)>onMouseEnter=nullptr, std::function<void(button*)>onMouseExit=nullptr) {
+    button* btn = new button(quad(pos, size, tileUV(1, 0)));
 
-    start->col = vec4(1, 1, 1, 1);
-    start->create(e->m_texture_atlas);
-    e->Renderer->AddToRQ_2D(*start);
+    btn->col = vec4(1, 1, 1, 1);
+    btn->create(e->m_texture_atlas);
+    e->Renderer->AddToRQ_2D(*btn);
+
+    //text follows the button's visibility
+    btn->onUpdate = [btn](quad* q) -> void {
+        for (auto l : btn->textQuads) {
+            l->visible=q->visible;
+        }
+    };
 
     for (auto q : StrToUI(e->m_font_atlas, pos, std::move(text), textScale, 1)) {
         q->col = vec4(1, 1, 1, 1);
         e->Renderer->AddToRQ_2D(*q);
 
-        start->textQuads.push_back(q);
+        btn->textQuads.push_back(q);
     }
 
-    start->onClick = [e, onClick](button* b) {
-        if (onClick) onClick(b);
-    };
+    btn->onClick = onClick;
 
-    start->onHoverEnter = [e, onMouseEnter](button* q) -> void {
+    btn->onHoverEnter = [onMouseEnter](button* q) -> void {
         q->col = vec4(.8f, .8f, .8f, 1);
         for (auto l : q->textQuads) {
             l->col = vec4(.8f, .8f, .8f, 1);
@@ -197,7 +479,7 @@ void createButton(engine* e, vec2 pos, vec2 size, string text, float textScale=1
         if (onMouseEnter) onMouseEnter(q);
     };
 
-    start->onHoverExit = [e, onMouseExit](button* q) -> void {
+    btn->onHoverExit = [onMouseExit](button* q) -> void {
         q->col = vec4(1, 1, 1, 1);
         for (auto l : q->textQuads) {
             l->col = vec4(1, 1, 1, 1);
@@ -205,78 +487,126 @@ void createButton(engine* e, vec2 pos, vec2 size, string text, float textScale=1
         if (onMouseExit) onMouseExit(q);
     };
 
-    e->addButtonToList(start);
+    e->addButtonToList(btn);
 }
 
-void createTitleScreen(engine* e) {
-    createButton(
-        e,
-        {-.75f, 0},
-        {.4f, .3f},
-        "Begin",
-        1.0f,
-        [e](button* q) ->void {
-            e->state = IN_GAME;
-            //todo: spawning in animation
-        }
-    );
+//bobbing title
+void createTitleText(engine* e, const std::string& text, vec2 pos, float scale) {
+    float ns = scale * .8f;//80% original scale
+    vec2 sc = {0.1f*ns, 0.1f*ns};
 
-    //state=IN_GAME;
+    int i = 0;
+    for (auto q : StrToUI(e->m_font_atlas, pos, text, scale)) {
+        float baseY = q->pos.y;
 
-    //title screen
-    float scale = 1.5f;
-    int i=0;
-    for (auto q : StrToUI(e->m_font_atlas, {0, 0.7f}, "Buried Alive", scale)) {
-        i++;
-        double cTimeOffset = 0.05f*i;
-
-        q->creationTime-=cTimeOffset;
+        q->creationTime -= 0.05 * i++;//stagger the wave per letter
         q->col = {0,0,0, 1.0f};
-
-        q->onUpdate = [](quad* q) -> void {
-            double age = glfwGetTime() - q->creationTime;
-            q->pos.y += sin(age)/30000;
+        q->onUpdate = [baseY](quad* self) -> void {
+            float age = (float)(glfwGetTime() - self->creationTime);
+            self->pos.y = baseY + std::sin(age) * titleBobAmp;
         };
-
         e->Renderer->AddToRQ_2D(*q);
-
-        float ns = scale * .8f;//80% original scale
-        vec2 sc = {0.1f*ns, 0.1f*ns};
+        titleQuads.push_back(q);
 
         quad* fill = new quad(q->pos, sc, q->uv);
         fill->creationTime=q->creationTime;
         fill->z = 1;
         fill->create(e->m_font_atlas);
-        e->Renderer->AddToRQ_2D(*fill);
+        fill->onUpdate = [baseY](quad* self) -> void {
+            float age = (float)(glfwGetTime() - self->creationTime);
 
-        fill->onUpdate = [](quad* q) -> void {
-            float age = glfwGetTime() - q->creationTime;
+            self->pos.y = baseY + std::sin(age) * titleBobAmp;
 
-            q->pos.y += sin(age)/30000;
-
-            float t = (sin(age * 2.0) + 1.0f) * 0.5f;
+            float t = (std::sin(age * 2.0f) + 1.0f) * 0.5f;
             vec4 colA = {1.0f, 0.76f, 0.0f, 1.0f};//orange
             vec4 colB = {1.0f, 0.4f, 0.0f, 1.0f};//red-orange
-            q->col = mix(colA, colB, t);
+            self->col = mix(colA, colB, t);
         };
+        e->Renderer->AddToRQ_2D(*fill);
+        titleQuads.push_back(fill);
     }
+}
 
-    //title screen
-    vector objs = {
-        //floor
-        new object({0,-3.5f,0}, {100,1,100}, tileUV(0,0)),
-        //test collisions obj
-        new object({1,-2.5f,1}, {1,1,1}, tileUV(0,0)),
+//create title scene
+void createTitleScene(engine* e) {
+    light* camLight = new light(object({0,-2.5f,0}, {.5f,.5f,.5f}, tileUV(0,0)));
+    camLight->visible = false;
+    camLight->create(e->m_texture_atlas);
+    e->Renderer->AddLight(*camLight);
+    e->Renderer->AddToRQ_M(*camLight);
+
+    camLight->onUpdate = [e, camLight](object* o) -> void{
+        camLight->pos = e->Renderer->cam.pos;
     };
 
-    for (auto o : objs) {
-        o->create(e->m_texture_atlas);
-        e->Renderer->AddToRQ_M(*o);
-    }
+    playerLight = camLight;
+}
 
-    light* torch = new light(object({0,-2.5f,0}, {.5f,.5f,.5f}, tileUV(0,0)));
-    torch->create(e->m_texture_atlas);
-    e->Renderer->AddLight(*torch);
+void createPlayerSprite(engine* e) {
+    quad* jimothy = new quad({0,0}, {.3f, .4f}, tileUV(0,2));
+    jimothy->create(e->m_texture_atlas);
+    jimothy->onUpdate = [e](quad* q) -> void {
+        if (e->isMoving) {
+            q->setFrame((int)(glfwGetTime() * 16));
+        } else {
+            q->setFrame(0);
+        }
+
+        //flip horizontally
+        UVRect r = q->frames.at(q->curFrame);
+        if (facingLeft) std::swap(r.u0, r.u1);
+
+        //reset the uv if facing normally
+        if (q->uv.u0 != r.u0 || q->uv.u1 != r.u1) q->setUV(r);
+    };
+
+    jimothy->addFrame(0, 2);
+    jimothy->addFrame(1, 2);
+    jimothy->addFrame(2, 2);
+    jimothy->addFrame(3, 2);
+    jimothy->addFrame(4, 2);
+    jimothy->addFrame(5, 2);
+
+    e->Renderer->AddToRQ_2D(*jimothy);
+
+    playerSprite = jimothy;
+}
+
+void createTitleScreen(engine* e) {
+    createTitleScene(e);
+    createTitleText(e, "Buried Alive", {0, 0.6f}, 3.0f);
+    createPlayerSprite(e);
+
+    createButton(
+        e,
+        {0, 0.2f},
+        {.4f, .3f},
+        "Begin",
+        1.0f,
+        [e](button* q) ->void {
+            hideButton(q);
+            startGame(e);
+        }
+    );
+}
+
+//links a program and logs the reason if it fails
+unsigned int linkProgram(unsigned int vert, unsigned int frag, const char* name) {
+    unsigned int prog = glCreateProgram();
+    glAttachShader(prog, vert);
+    glAttachShader(prog, frag);
+    glLinkProgram(prog);
+
+    int succ;
+    char infoLog[512];
+    glGetProgramiv(prog, GL_LINK_STATUS, &succ);
+    if(!succ) {
+        glGetProgramInfoLog(prog, 512, NULL, infoLog);
+        err((std::string("Failed to link ") + name + " shaders: " + infoLog).c_str());
+        glDeleteProgram(prog);
+        return 0;
+    }
+    return prog;
 }
 
 int engine::init() {
@@ -336,47 +666,10 @@ int engine::init() {
     if (!p_vert || !p_frag) { err("Failed to load particle shaders."); return -1; }
 
     //link shaders
-    ui_shader_program = glCreateProgram();
-    glAttachShader(ui_shader_program, ui_vertShader);
-    glAttachShader(ui_shader_program, ui_fragShader);
-    glLinkProgram(ui_shader_program);
-
-    m_shader_program = glCreateProgram();
-    glAttachShader(m_shader_program, m_vertShader);
-    glAttachShader(m_shader_program, m_fragShader);
-    glLinkProgram(m_shader_program);
-
-    p_shader_program = glCreateProgram();
-    glAttachShader(p_shader_program, p_vert);
-    glAttachShader(p_shader_program, p_frag);
-    glLinkProgram(p_shader_program);
-
-    int  mlsucc;
-    char mlinfoLog[512];
-    glGetProgramiv(m_shader_program, GL_LINK_STATUS, &mlsucc);
-    if(!mlsucc) {
-        glGetProgramInfoLog(m_shader_program, 512, NULL, mlinfoLog);
-        err((to_string(*"Failed to link MAIN shaders: ") + mlinfoLog).c_str());
-        return -1;
-    }
-
-    int  ulsucc;
-    char ulinfoLog[512];
-    glGetProgramiv(ui_shader_program, GL_LINK_STATUS, &ulsucc);
-    if(!ulsucc) {
-        glGetProgramInfoLog(ui_shader_program, 512, NULL, ulinfoLog);
-        err((to_string(*"Failed to link UI shaders: ") + ulinfoLog).c_str());
-        return -1;
-    }
-
-    int  plsucc;
-    char plinfoLog[512];
-    glGetProgramiv(p_shader_program, GL_LINK_STATUS, &plsucc);
-    if(!plsucc) {
-        glGetProgramInfoLog(p_shader_program, 512, NULL, plinfoLog);
-        err((to_string(*"Failed to link Particle shaders: ") + plinfoLog).c_str());
-        return -1;
-    }
+    ui_shader_program = linkProgram(ui_vertShader, ui_fragShader, "UI");
+    m_shader_program = linkProgram(m_vertShader, m_fragShader, "MAIN");
+    p_shader_program = linkProgram(p_vert, p_frag, "Particle");
+    if (!ui_shader_program || !m_shader_program || !p_shader_program) return -1;
 
     glDeleteShader(ui_vertShader);
     glDeleteShader(ui_fragShader);
@@ -418,7 +711,7 @@ void engine::render() {
     //draw 3d
     glUseProgram(m_shader_program);
     Renderer->LoadRQ_M();
-    Renderer->Draw3D(m_shader_program, (float)winSize->x / (float)winSize->y);
+    Renderer->Draw3D(m_shader_program, (float)winSize->x / (float)winSize->y, lighting_setting);
 
     //upscale FBO for pixelation
     glBindFramebuffer(GL_READ_FRAMEBUFFER, lFBO);
@@ -451,7 +744,7 @@ void engine::update() {
     handle_input(this);
     updateUI(this);
 
-    for (auto q : Renderer->GetAll3D()) {if (q->visible) q->update();}
+    for (auto q : Renderer->GetAll3D()) {q->update();}
 
     if (frameT > lastFUpdate + 1) {
         lastFUpdate = frameT;
@@ -476,6 +769,9 @@ GLFWwindow *engine::getWindow() {
 }
 
 void engine::setWindowSize(ivec2 *wSize) {
+    //a minimized window is 0x0, which would divide by zero below
+    if (wSize->x <= 0 || wSize->y <= 0) return;
+
     winSize = wSize;
     glViewport(0, 0, wSize->x, wSize->y);
     if (lFBO) createLowRes((int)(180.0f * wSize->x / wSize->y), 180);//180x180px with aspect ratio

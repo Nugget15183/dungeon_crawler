@@ -83,7 +83,7 @@ std::vector<object*> renderer::GetRQ_3D() {
     return m_render_queue;
 }
 
-void renderer::Draw3D(unsigned int program, float aspect) {
+void renderer::Draw3D(unsigned int program, float aspect, lightingSetting lighting) {
     glUseProgram(program);
 
     const int MAX_LIGHTS = 16;
@@ -105,7 +105,14 @@ void renderer::Draw3D(unsigned int program, float aspect) {
         glUniform3fv(glGetUniformLocation(program, "uLightColor"), n, value_ptr(col[0]));
         glUniform1fv(glGetUniformLocation(program, "uLightRadius"), n, rad);
     }
-    glUniform3f(glGetUniformLocation(program, "uAmbient"), 0.05f, 0.05f, 0.08f);
+
+    if (lighting==OUTSIDE) {
+        glUniform3f(glGetUniformLocation(program, "uAmbient"), 1.0f, 0.94f, 0.72f);
+    } else if (lighting==DUNGEON) {
+        glUniform3f(glGetUniformLocation(program, "uAmbient"), 0.05f, 0.05f, 0.08f);
+    } else if (lighting==MOONLIT) {
+        glUniform3f(glGetUniformLocation(program, "uAmbient"), 0.72f, 0.91f, 1.0f);
+    }
 
     mat4 viewProj = cam.proj(aspect) * cam.view();
     int locVP = glGetUniformLocation(program, "uViewProj");

@@ -6,6 +6,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
 using namespace glm;
 
 struct vert2d {
@@ -50,8 +51,10 @@ struct quad {
         this->uv = uv;
     }
 
-    UVRect uv;
+    std::vector<UVRect> frames;
+    int curFrame=0;
 
+    UVRect uv;
     vert2d verts[4];
 
     unsigned int idx[6] = {0, 1, 3, 1, 2, 3};
@@ -67,9 +70,10 @@ struct quad {
     vec2 pos;
     vec4 col = {1,1,1, 1};
 
-    void (*onUpdate)(quad*) = nullptr;
+    std::function<void(quad*)> onUpdate = nullptr;
 
-    void setUV(const UVRect& uv) {
+    void setUV(const UVRect& newuv) {
+        uv=newuv;
         verts[0].uv = {uv.u1, uv.v1};
         verts[1].uv = {uv.u1, uv.v0};
         verts[2].uv = {uv.u0, uv.v0};
@@ -79,6 +83,24 @@ struct quad {
             glBindBuffer(GL_ARRAY_BUFFER, VBO);
             glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
         }
+    }
+
+    void addFrame(const UVRect& r) {frames.push_back(r);}
+    void addFrame(int tx, int ty, int ATLAS_TILES=16){ frames.push_back(tileUV(tx, ty, ATLAS_TILES));}
+
+    void setFrame(int i) {
+        if (frames.empty()) { return; }
+
+        //wrap i around existing frame count
+        i%=frames.size();
+        if (i<0)i+=frames.size();
+
+        //dont waste time updating
+        if (i==curFrame)return;
+
+        //update gpu
+        curFrame=i;
+        setUV(frames.at(i));
     }
 
     void setTile(int tx, int ty, int atlasTiles = 16) {
@@ -200,7 +222,7 @@ struct object {
     bool visible = true;
     double creationTime = 0;
 
-    void (*onUpdate)(object*) = nullptr;
+    std::function<void(object*)> onUpdate = nullptr;
 
     mat4 modelMatrix() {
         mat4 m = translate(mat4(1.0f), pos);
@@ -309,7 +331,7 @@ struct light : object {
 struct camera {
     vec3 pos = {0,0,0};
 
-    float yaw = -90.0f;
+    float yaw = 0.0f;
     float pitch = -70.0f;
     float fov = 70.0f;
 
@@ -335,6 +357,12 @@ struct camera {
     }
 };
 
+enum lightingSetting {
+    OUTSIDE,
+    DUNGEON,
+    MOONLIT,
+};
+
 class renderer {
 public:
     camera cam;
@@ -350,7 +378,7 @@ public:
     object& GetNextFromRQ_M();
     void LoadRQ_M();
     void AddToRQ_M(object& obj);
-    void Draw3D(unsigned int program, float aspect);
+    void Draw3D(unsigned int program, float aspect, lightingSetting lighting);
     std::vector<object*> GetRQ_3D();
 
     std::vector<quad*> GetAll2D() {return quads;}
