@@ -8,6 +8,7 @@
 
 #include "util.h"
 #include <random>
+#include <utility>
 
 /*
 todo list
@@ -20,8 +21,7 @@ spawn animation (cave collapse, trapping player in first room)
 2D
 title menu
 settings
-particles (in prog)
-get particle texture flipbooks
+
 
  */
 
@@ -30,9 +30,9 @@ using namespace logger;
 
 //random class, used for particle randomness
 static std::mt19937 rng{std::random_device{}()};
-static float rnd(float a, float b) { return std::uniform_real_distribution<float>(a, b)(rng); }
+static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)(rng); }
 
-std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f) {
+std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f, int z=0) {
     std::vector<quad*> ret;
     int x = 0;
     float sc = 0.1f * scale;
@@ -47,6 +47,7 @@ std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, fl
         int row = baseIndex / 16;
 
         quad* q = new quad({startX + (float)x * spacing, pos.y}, {sc, sc}, tileUV(col, row));
+        q->z=z;
         q->create(fontAtlas);
         ret.push_back(q);
 
@@ -88,6 +89,8 @@ void handle_input(engine* e) {
 
     if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(win, true);
 
+    if (e->state!=IN_GAME) return;
+
     double delta = e->getDelta();
     double speed = 2.00;
 
@@ -106,7 +109,7 @@ void handle_input(engine* e) {
             e->Renderer,
             {0,-.3f},
             walkDir*vec2(-1,1)+vec2(0.0,0.2f),
-            vec2(-.1f, .1f),
+            vec2(-.5f, .5f),
             vec2(0, -1.0f),
             vec4(0.41f, 0.39f, 0.32f, 1.0f),
             vec4(0.08f, 0.08f, 0.04f, 1.0f),
@@ -118,7 +121,108 @@ void handle_input(engine* e) {
     }
 }
 
+void updateUI(engine* e) {
+    //handle ui updates before buttons
+    e->Renderer->UpdateParticles((float)std::min(e->getDelta(), 0.1));//clamp so particles dont explode
+    for (auto q : e->Renderer->GetAll2D()) {if (q->visible) q->update();}
+
+    GLFWwindow* win = e->getWindow();
+
+    double mx, my;
+    int ww, wh;
+    glfwGetCursorPos(win, &mx, &my);
+    glfwGetWindowSize(win, &ww, &wh);
+
+    //handle ui buttons
+    if (ww > 0 && wh > 0) {
+        e->mousePos = vec2(mx, my);
+        vec2 ndc = { (float)(mx / ww * 2.0 - 1.0), (float)(1.0 - my / wh * 2.0) };
+
+        bool down = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool pressedNow  = down && !e->mouseWasDown;
+        bool releasedNow = !down && e->mouseWasDown;
+        e->mouseWasDown = down;
+
+        std::vector<button*> btns = e->getButtons();
+
+        button* top = nullptr;
+        for (auto it = btns.rbegin(); it != btns.rend(); ++it) {
+            if ((*it)->visible && (*it)->contains(ndc)) { top = *it; break; }
+        }
+
+        for (auto b : btns) {
+            bool hit = (b == top);
+
+            if (hit && !b->isHovering) {
+                b->isHovering = true;
+                if (b->onHoverEnter) b->onHoverEnter(b);
+            } else if (!hit && b->isHovering) {
+                b->isHovering = false;
+                if (b->onHoverExit) b->onHoverExit(b);
+            }
+
+            if (pressedNow && hit) b->isPressed = true;
+
+            if (releasedNow) {
+                if (b->isPressed && hit && b->onClick) b->onClick(b);
+                b->isPressed = false;
+            }
+        }
+    }
+}
+
+void createButton(engine* e, vec2 pos, vec2 size, string text, float textScale=1.0f, std::function<void(button*)> onClick=nullptr, std::function<void(button*)>onMouseEnter=nullptr, std::function<void(button*)>onMouseExit=nullptr) {
+    button* start = new button(quad(pos, size, tileUV(1, 0)));
+
+    start->col = vec4(1, 1, 1, 1);
+    start->create(e->m_texture_atlas);
+    e->Renderer->AddToRQ_2D(*start);
+
+    for (auto q : StrToUI(e->m_font_atlas, pos, std::move(text), textScale, 1)) {
+        q->col = vec4(1, 1, 1, 1);
+        e->Renderer->AddToRQ_2D(*q);
+
+        start->textQuads.push_back(q);
+    }
+
+    start->onClick = [e, onClick](button* b) {
+        if (onClick) onClick(b);
+    };
+
+    start->onHoverEnter = [e, onMouseEnter](button* q) -> void {
+        q->col = vec4(.8f, .8f, .8f, 1);
+        for (auto l : q->textQuads) {
+            l->col = vec4(.8f, .8f, .8f, 1);
+        }
+        if (onMouseEnter) onMouseEnter(q);
+    };
+
+    start->onHoverExit = [e, onMouseExit](button* q) -> void {
+        q->col = vec4(1, 1, 1, 1);
+        for (auto l : q->textQuads) {
+            l->col = vec4(1, 1, 1, 1);
+        }
+        if (onMouseExit) onMouseExit(q);
+    };
+
+    e->addButtonToList(start);
+}
+
 void createTitleScreen(engine* e) {
+    createButton(
+        e,
+        {-.75f, 0},
+        {.4f, .3f},
+        "Begin",
+        1.0f,
+        [e](button* q) ->void {
+            e->state = IN_GAME;
+            //todo: spawning in animation
+        }
+    );
+
+    //state=IN_GAME;
+
     //title screen
     float scale = 1.5f;
     int i=0;
@@ -127,7 +231,7 @@ void createTitleScreen(engine* e) {
         double cTimeOffset = 0.05f*i;
 
         q->creationTime-=cTimeOffset;
-        q->col = {0,0,0};
+        q->col = {0,0,0, 1.0f};
 
         q->onUpdate = [](quad* q) -> void {
             double age = glfwGetTime() - q->creationTime;
@@ -151,8 +255,8 @@ void createTitleScreen(engine* e) {
             q->pos.y += sin(age)/30000;
 
             float t = (sin(age * 2.0) + 1.0f) * 0.5f;
-            vec3 colA = {1.0f, 0.76f, 0.0f};//orange
-            vec3 colB = {1.0f, 0.4f, 0.0f};//red-orange
+            vec4 colA = {1.0f, 0.76f, 0.0f, 1.0f};//orange
+            vec4 colB = {1.0f, 0.4f, 0.0f, 1.0f};//red-orange
             q->col = mix(colA, colB, t);
         };
     }
@@ -161,6 +265,8 @@ void createTitleScreen(engine* e) {
     vector objs = {
         //floor
         new object({0,-3.5f,0}, {100,1,100}, tileUV(0,0)),
+        //test collisions obj
+        new object({1,-2.5f,1}, {1,1,1}, tileUV(0,0)),
     };
 
     for (auto o : objs) {
@@ -343,12 +449,9 @@ void engine::update() {
     double frameT = glfwGetTime();
 
     handle_input(this);
-
-    //clamp so particles dont explode
-    Renderer->UpdateParticles((float)std::min(delta, 0.1));
+    updateUI(this);
 
     for (auto q : Renderer->GetAll3D()) {if (q->visible) q->update();}
-    for (auto q : Renderer->GetAll2D()) {if (q->visible) q->update();}
 
     if (frameT > lastFUpdate + 1) {
         lastFUpdate = frameT;

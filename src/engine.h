@@ -15,6 +15,29 @@ struct key {
     float lastPress = (float)glfwGetTime();
 };
 
+struct button : quad {
+    button(const quad& q) : quad(q) {}
+
+    bool isHovering = false;
+    bool isPressed = false;
+
+    std::function<void(button*)> onClick;
+    std::function<void(button*)> onHoverEnter;
+    std::function<void(button*)> onHoverExit;
+
+    std::vector<quad*> textQuads;
+
+    bool contains(vec2 ndc) const {
+        vec2 h = verts[0].pos;
+        return fabs(ndc.x - pos.x) <= h.x && fabs(ndc.y - pos.y) <= h.y;
+    }
+};
+
+enum gameState {
+    MAIN_MENU,
+    IN_GAME,
+};
+
 class engine {
 public:
     int init();
@@ -31,9 +54,15 @@ public:
 
     void createLowRes(int w, int h);
 
+    void addButtonToList(button* btn) {buttons.push_back(btn);}
+    std::vector<button*>getButtons() {return buttons;}
+
     renderer* Renderer;
     unsigned int m_texture_atlas;
     unsigned int m_font_atlas;
+    vec2 mousePos = {0,0};
+    bool mouseWasDown = false;
+    gameState state = MAIN_MENU;
 private:
     GLFWwindow* win;
     ivec2* winSize = new ivec2(800, 600);
@@ -53,6 +82,8 @@ private:
 
     unsigned int lFBO = 0, lCol = 0, lDepth = 0;
     int lowW = 0, lowH = 0;
+
+    std::vector<button*> buttons;
 };
 
 

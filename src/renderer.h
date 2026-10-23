@@ -65,7 +65,7 @@ struct quad {
     double creationTime = 0;
 
     vec2 pos;
-    vec3 col = {1,1,1};
+    vec4 col = {1,1,1, 1};
 
     void (*onUpdate)(quad*) = nullptr;
 
@@ -119,7 +119,7 @@ struct quad {
 
         glBindVertexArray(VAO);
         glVertexAttrib2f(2, pos.x, pos.y);
-        glVertexAttrib3f(3, col.r, col.g, col.b);
+        glVertexAttrib4f(3, col.r, col.g, col.b, col.a);
 
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
