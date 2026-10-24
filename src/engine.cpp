@@ -16,7 +16,7 @@
 using namespace util;
 using namespace logger;
 
-//random class, used for particle randomness
+//random class
 static std::mt19937 rng{std::random_device{}()};
 static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)(rng); }
 
@@ -25,6 +25,48 @@ static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)
 namespace {
     //title screen
     const float titleBobAmp = 0.075f;
+
+    //camera
+    const float camFollow = 6.0f;
+    vec2 camFocus = {0,0};
+    vec2 camNDC = {0,0};
+    float sYOFF = 0.1f;
+    const float feetDrop = 0.1f;
+
+    //plr
+    const int maxPlrHealth = 5;
+    const float hurtTime = 0.5f; //iframes after hit
+    const float knockbackSpeed = 6.0f;
+    int plrHealth = maxPlrHealth;
+    float hurtTimer = 0.0f;
+    vec2 plrNDC = {0,0};
+    vec2 plrKnock = {0,0};
+    bool dead = false;
+
+    const float bulletSpeed = 6.0f;
+    const float bulletLife = 1.2f;
+    const float bulletRad = 0.1f;
+    const float bulletLift = 0.12f;
+    const vec2 bulletSize = {0.08f, 0.08f};
+    const float shootCooldown = 0.3f;
+    const int bulletDamage = 1;
+
+    //slimes
+    const int sHealth = 3;
+    const vec2 sSize = {0.25f, 0.25f};
+    const float sRad = 0.25f; //half width
+    const float sViewRange = 7.0f;
+    const float sWindup = 0.3f;
+    const float sAirTime = 0.3f;
+    const float sLandTime = 0.1f;
+    const float sHopTime = sWindup + sAirTime + sLandTime;
+    const float sHopDist = 0.9f;
+    const float sHopPause = 0.35f;
+    const float sReach = 0.4f;//dist from the plr to hit them
+    const float sJumpHeight = 0.08f;//jump arc height
+    const int sBase = 2;
+    const int sPerLevel = 1;
+    const int maxS = 12;
 
     //world
     const float floorY = -3.5f; //center of the floor blocks
@@ -38,7 +80,6 @@ namespace {
     const int baseMapSize = 26;//26x26
     const int maxMapSize = 44;
     const int mapGrowth = 2;//per level
-    const int platformH = 0.25f;//exit platform height
     const float levelTextTime = 3.6f;
     const float descendTime = 0.6f;
     int level = 0;
@@ -91,6 +132,30 @@ namespace {
     std::vector<object*> floorBlocks;
     std::vector<float> columnAlpha;
     std::vector<int> fadedTiles;
+
+    bool uiButtonsExist = true;
+
+    struct slime {
+        int hp = sHealth;
+        float hitTimer = 0.0f;
+        quad* sprite = nullptr;
+        vec2 pos = {0, 0};//world x, z
+        vec2 hopDir = {0, 0};
+        float hopT = 0.0f;
+        float restT = 0.0f;
+        bool hopping = false;
+    };
+    std::vector<slime> slimes;
+
+    struct bullet {
+        quad* sprite = nullptr;
+        vec2 pos = {0, 0};   //world x, z
+        vec2 vel = {0, 0};
+        float life = 0.0f;
+    };
+    std::vector<bullet> bullets;
+    float shootTimer = 0.0f;
+    vec2 plrAim = {0, 1};
 }
 
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f, int z=0) {
@@ -119,7 +184,7 @@ std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, fl
 }
 
 void showLevelText(engine* e, int lvl) {
-    for (auto q : StrToUI(e->m_font_atlas_2, {0, 0.85f}, "Level " + to_string(lvl), 1.5f, 5.0f)) {
+    for (auto q : StrToUI(e->m_font_atlas_2, {0, 0.85f}, "Level " + std::to_string(lvl), 1.5f, 5)) {
         q->col = {1, 1, 1, 0};
         q->onUpdate = [](quad* self) -> void {
             float age = (float)(glfwGetTime() - self->creationTime);
@@ -158,25 +223,288 @@ vec2 safeNorm(vec2 vec) {
     return normalize(vec);
 }
 
-bool canStand(float x, float z) {
-    if (!inDungeon) return true;
-
-    for (float dx : {-playerRadius, playerRadius}) {
-        for (float dz : {-playerRadius, playerRadius}) {
-            if (!dungeonMap.isFloor((int)std::floor(x + dx), (int)std::floor(z + dz))) return false;
+bool canStandR(float x, float z, float r, bool avoidHole = false) {
+    for (float dx : {-r,r}) {
+        for (float dz : {-r, r}) {
+            int tx = (int)std::floor(x + dx);
+            int tz = (int)std::floor(z + dz);
+            if (!dungeonMap.isFloor(tx, tz)) return false;
+            if (avoidHole && dungeonMap.isHole(tx, tz)) return false;
         }
     }
     return true;
 }
 
-void syncCamera(engine* e) {
+bool lineOfSight(vec2 a, vec2 b) {
+    int steps = (int)(distance(a, b) / 0.25f) + 1;
+    for (int i = 0; i < steps; i++) {
+        vec2 p = mix(a, b, (float)i / steps);
+        if (!dungeonMap.isFloor((int)std::floor(p.x), (int)std::floor(p.y))) return false;
+    }
+    return true;
+}
+
+int spriteZ(float ndcY) {
+    return -1000 + (int)((1.0f - ndcY) * 100.0f);
+}
+
+vec2 projGround(engine* e, vec2 w, bool* valid = nullptr) {
+    if (valid) *valid = false;
+
+    int ww, wh;
+    glfwGetWindowSize(e->getWindow(), &ww, &wh);
+    if (ww <= 0 || wh <= 0) return vec2(0, 0);
+
     camera& c = e->Renderer->cam;
+    vec4 clip = c.proj((float)ww / (float)wh) * c.view() * vec4(w.x, floorTop, w.y, 1.0f);
+    if (clip.w <= 0.0f) return vec2(0, 0);
+
+    if (valid) *valid = true;
+    return vec2(clip.x, clip.y) / clip.w;
+}
+
+void syncCamera(engine* e, bool snap = false) {
+    camera& c = e->Renderer->cam;
+    float delta = (float)std::min(e->getDelta(), 0.1);
+
+    //where a fixed ground point is on screen before the camera moves
+    vec2 before = projGround(e, playerPos);
+
+    if (snap) camFocus = playerPos;
+    else camFocus += (playerPos - camFocus) * (1.0f - std::exp(-camFollow * delta));
 
     vec3 f = c.foward();
     float t = (floorTop - c.pos.y) / f.y;
 
-    c.pos.x = playerPos.x - f.x * t + camShake.x;
-    c.pos.z = playerPos.y - f.z * t + camShake.y;
+    c.pos.x = camFocus.x - f.x * t + camShake.x;
+    c.pos.z = camFocus.y - f.z * t + camShake.y;
+
+    vec2 after = projGround(e, playerPos);
+    if (!snap) e->Renderer->MoveParticles(after - before);
+    plrNDC = after;
+}
+
+void fireBullet(engine* e) {
+    bullet b;
+    b.pos = playerPos + plrAim * 0.2f;
+    b.vel = plrAim * bulletSpeed;
+    b.life = bulletLife;
+
+    b.sprite = new quad({0, 0}, bulletSize, tileUV(3, 0));
+    b.sprite->create(e->m_texture_atlas);
+    b.sprite->worldSpace = true;
+    b.sprite->visible = false;
+    e->Renderer->AddToRQ_2D(*b.sprite);
+
+    bullets.push_back(b);
+}
+
+void updateBullets(engine* e, float delta) {
+    for (auto& b : bullets) {
+        b.life -= delta;
+
+        //move in small steps so a fast ball can't skip through a wall or a slime
+        vec2 move = b.vel * delta;
+        int sub = (int)(length(move) / 0.1f) + 1;
+        vec2 stepv = move / (float)sub;
+
+        for (int i = 0; i < sub && b.life > 0.0f; i++) {
+            b.pos += stepv;
+
+            //walls
+            if (!dungeonMap.isFloor((int)std::floor(b.pos.x), (int)std::floor(b.pos.y))) {
+                b.life = 0.0f;
+                break;
+            }
+
+            //slimes
+            for (auto& s : slimes) {
+                if (s.hp <= 0 || distance(b.pos, s.pos) > sRad + bulletRad) continue;
+
+                s.hp -= bulletDamage;
+                s.hitTimer = 0.15f;
+                s.hopping = false;       //getting hit interrupts a hop
+                s.restT = 0.3f;
+                s.sprite->setFrame(0);
+
+                vec2 kb = safeNorm(b.vel) * 0.15f;
+                if (canStandR(s.pos.x + kb.x, s.pos.y + kb.y, sRad, true)) s.pos += kb;
+
+                b.life = 0.0f;
+                break;
+            }
+            if (b.life <= 0.0f) break;
+        }
+    }
+
+    //remove spent
+    for (size_t i = bullets.size(); i-- > 0;) {
+        if (bullets[i].life > 0.0f) continue;
+
+        e->Renderer->RemoveFromRQ_2D(*bullets[i].sprite);
+        bullets[i].sprite->destroy();
+        delete bullets[i].sprite;
+        bullets.erase(bullets.begin() + i);
+    }
+
+    //remove dead
+    for (size_t i = slimes.size(); i-- > 0;) {
+        if (slimes[i].hp > 0) continue;
+
+        spawnParticles(
+            e->Renderer,
+            projGround(e, slimes[i].pos) + vec2(0, 0.03f),
+            vec2(0.0f, 0.1f),
+            vec2(-.5f, .5f),
+            vec2(0, -1.0f),
+            vec4(0.4f, 0.8f, 0.3f, 1.0f),
+            vec4(0.1f, 0.3f, 0.1f, 0.0f),
+            vec2(0.02f, 0.04f),
+            vec2(0.0f, 0.01f),
+            vec2(0.3f, 0.6f),
+            12
+        );
+
+        e->Renderer->RemoveFromRQ_2D(*slimes[i].sprite);
+        slimes[i].sprite->destroy();
+        delete slimes[i].sprite;
+        slimes.erase(slimes.begin() + i);
+    }
+}
+
+void placeSprites(engine* e) {
+    playerSprite->pos = {plrNDC.x, plrNDC.y + sYOFF};
+    playerSprite->z = spriteZ(plrNDC.y);
+
+    for (auto& s : slimes) {
+        bool seen = lineOfSight(playerPos, s.pos);
+
+        bool projected = false;
+        vec2 n = seen ? projGround(e, s.pos, &projected) : vec2(0, 0);
+        bool onScreen = projected && std::abs(n.x) < 1.3f && std::abs(n.y) < 1.3f;
+
+        s.sprite->visible = seen && onScreen;
+        if (!s.sprite->visible) continue;
+
+        float air = (s.hopT - sWindup) / sAirTime;
+        float arc = (s.hopping && air > 0.0f && air < 1.0f) ? std::sin(air * 3.14159f) * sJumpHeight : 0.0f;
+
+        s.sprite->pos = {n.x, n.y + sSize.y * 0.5f - feetDrop + arc};
+        s.sprite->z = spriteZ(n.y);
+    }
+
+    for (auto& b : bullets) {
+        bool ok = false;
+        vec2 n = projGround(e, b.pos, &ok);
+
+        b.sprite->visible = ok && std::abs(n.x) < 1.3f && std::abs(n.y) < 1.3f;
+        if (!b.sprite->visible) continue;
+
+        b.sprite->pos = {n.x, n.y + bulletLift};
+        b.sprite->z = spriteZ(n.y);
+    }
+}
+
+void spawnSlimes(engine* e) {
+    if (dungeonMap.rooms.size() < 2) return;
+
+    int count = std::min(sBase + (level - 1) * sPerLevel, maxS);
+    for (int i = 0; i < count; i++) {
+        const dungeon::Room& r = dungeonMap.rooms[std::uniform_int_distribution<size_t>(1, dungeonMap.rooms.size() - 1)(rng)];
+
+        for (int tries = 0; tries < 10; tries++) {
+            vec2 p = {rnd(r.x + 0.5f, r.x + r.w - 0.5f), rnd(r.y + 0.5f, r.y + r.h - 0.5f)};
+            if (!canStandR(p.x, p.y, sRad, true) || distance(p, playerPos) < 5.0f) continue;
+
+            slime s;
+            s.pos = p;
+            s.restT = rnd(0.2f, 0.8f); //so they dont all hop in sync
+
+            s.sprite = new quad({0, 0}, sSize, tileUV(0, 3));
+            s.sprite->create(e->m_texture_atlas);
+            s.sprite->worldSpace = true;
+            for (int f = 0; f <= 4; f++) s.sprite->addFrame(f, 3);
+            s.sprite->visible = false;
+            e->Renderer->AddToRQ_2D(*s.sprite);
+
+            slimes.push_back(s);
+            break;
+        }
+    }
+}
+
+void updateEnemies(engine* e, float delta) {
+    for (auto& s : slimes) {
+        s.hitTimer = std::max(0.0f, s.hitTimer - delta);
+        s.sprite->col = s.hitTimer > 0.0f ? vec4(1.0f, 0.4f, 0.4f, 1.0f) : vec4(1.0f);
+
+        vec2 toPlayer = playerPos - s.pos;
+        float dist = length(toPlayer);
+
+        if (s.hopping) {
+            s.hopT += delta;
+            float t = s.hopT;
+
+            //frames 0-2 compress, 3 is the stretched leap, 4 is the landing
+            int frame;
+            if (t < sWindup) frame = (int)(t / sWindup * 3.0f);
+            else if (t < sWindup + sAirTime) frame = 3;
+            else frame = 4;
+
+            //only travels while it's in the air
+            if (t >= sWindup && t < sWindup + sAirTime) {
+                vec2 step = s.hopDir * (sHopDist / sAirTime * delta);
+                if (canStandR(s.pos.x + step.x, s.pos.y, sRad, true)) s.pos.x += step.x;
+                if (canStandR(s.pos.x, s.pos.y + step.y, sRad, true)) s.pos.y += step.y;
+            }
+
+            if (t >= sHopTime) {
+                s.hopping = false;
+                s.restT = sHopPause;
+                s.sprite->setFrame(0);
+            } else {
+                s.sprite->setFrame(frame);
+            }
+        } else {
+            s.sprite->setFrame(0);
+            s.restT -= delta;
+
+            if (s.restT <= 0.0f) {
+                if (dist < sViewRange && lineOfSight(s.pos, playerPos)) {
+                    s.hopDir = safeNorm(toPlayer);
+                    s.hopT = 0.0f;
+                    s.hopping = true;
+                } else {
+                    s.restT = 0.2f;
+                }
+            }
+        }
+
+        //attack
+        if (dist < sReach && hurtTimer <= 0.0f) {
+            plrHealth--;
+            hurtTimer = hurtTime;
+            plrKnock = safeNorm(toPlayer) * knockbackSpeed;
+            if (plrHealth <= 0) dead = true;
+
+            s.hopping = false;
+            s.restT = 0.8f;
+            s.sprite->setFrame(0);
+        }
+    }
+
+    //keep slimes from stacking on top of each other
+    for (size_t i = 0; i < slimes.size(); i++) {
+        for (size_t j = i + 1; j < slimes.size(); j++) {
+            vec2 d = slimes[i].pos - slimes[j].pos;
+            float l = length(d);
+            if (l >= sRad * 2.0f || l < 0.0001f) continue;
+
+            vec2 push = d / l * ((sRad * 2.0f - l) * 0.5f);
+            if (canStandR(slimes[i].pos.x + push.x, slimes[i].pos.y + push.y, sRad, true)) slimes[i].pos += push;
+            if (canStandR(slimes[j].pos.x - push.x, slimes[j].pos.y - push.y, sRad, true)) slimes[j].pos -= push;
+        }
+    }
 }
 
 void buildDungeon(engine* e, const dungeon::Map& map) {
@@ -231,6 +559,20 @@ void clearLevel(engine* e) {
         delete q;
     }
     levelText.clear();
+
+    for (auto& b : bullets) {
+        e->Renderer->RemoveFromRQ_2D(*b.sprite);
+        b.sprite->destroy();
+        delete b.sprite;
+    }
+    bullets.clear();
+
+    for (auto& s : slimes) {
+        e->Renderer->RemoveFromRQ_2D(*s.sprite);
+        s.sprite->destroy();
+        delete s.sprite;
+    }
+    slimes.clear();
 }
 
 //makes walls between the player and the camera transparent
@@ -280,10 +622,9 @@ void updateWallFade(engine* e) {
         columnAlpha[idx] = a;
         for (auto o : wallColumns[idx]) o->alpha = a;
 
-        //the floor block under the wall fades with it, but all the way, revealing the void
         if (object* fb = floorBlocks[idx]) {
-            float k = (1.0f - a) / (1.0f - fadeAlpha); //0 = solid, 1 = fully faded
-            fb->alpha = 1.0f - k * -1;
+            float k = (1.0f - a) / (1.0f - fadeAlpha);
+            fb->alpha = 1.0f - k;
             fb->visible = fb->alpha > 0.01f;
         }
 
@@ -308,7 +649,7 @@ void spawnRubble(engine* e) {
         float dist = rnd(0.6f, 1.5f);
         float x = playerPos.x + std::cos(ang) * dist;
         float z = playerPos.y + std::sin(ang) * dist;
-        if (!canStand(x, z)) continue;//only land on the floor
+        if (!canStandR(x, z, playerRadius)) continue;//only land on the floor
 
         float s = rnd(0.12f, 0.3f);
         float landY = floorTop + s * 0.5f;
@@ -360,7 +701,7 @@ void updateIntro(engine* e) {
     if (t >= introFallStart) {
         float s = std::clamp((t - introFallStart) / introFallTime, 0.0f, 1.0f);
         playerSprite->visible = true;
-        playerSprite->pos.y = introFallFrom * (1.0f - s * s) + 0.1f;//speeds up as it falls
+        sYOFF = introFallFrom * (1.0f - s * s) + 0.1f;//speeds up as it falls
     }
 
     //landing
@@ -369,7 +710,7 @@ void updateIntro(engine* e) {
 
         spawnParticles(
             e->Renderer,
-            {0,-.1f},
+            projGround(e, playerPos) + vec2(0, -.1f),
             vec2(0.0f, 0.1f),
             vec2(-.8f, .8f),
             vec2(0, -0.5f),
@@ -418,10 +759,10 @@ void updateIntro(engine* e) {
             float y = holeY - 0.5f * 2.5f * dt * dt;
 
             introRocks[i]->pos.y = y;
-            introRocks[i]->visible = dt >= 0 && y > -0.2f;//gone once it hits the floor
+            introRocks[i]->visible = dt >= 0 && y > -0.2f;
         }
 
-        //the player's light
+        //the players light
         playerLight->intensity = std::clamp((t - (introCaveStart + 0.6f)) / 1.0f, 0.0f, 1.0f);
     }
 
@@ -429,7 +770,7 @@ void updateIntro(engine* e) {
     if (t >= introEnd) {
         beamLight->enabled = false;
         playerLight->intensity = 1.0f;
-        playerSprite->pos.y = 0.1f;
+        sYOFF = 0.1f;
         camShake = {0, 0};
         introActive = false;
     }
@@ -439,7 +780,6 @@ void loadLevel(engine* e, int lvl) {
     level = lvl;
     clearLevel(e);
 
-    //each level is a little bigger with a few more rooms, up to a cap
     int rooms = std::min(baseRooms + (lvl - 1) * roomsPerLevel, maxRooms);
     int size = std::min(baseMapSize + (lvl - 1) * mapGrowth, maxMapSize);
 
@@ -450,7 +790,21 @@ void loadLevel(engine* e, int lvl) {
     const dungeon::Room& first = dungeonMap.rooms.front();
     playerPos = {first.cx() + 0.5f, first.cy() + 0.5f};
     camShake = {0, 0};
-    syncCamera(e);
+
+    syncCamera(e, true);
+
+    //reset plr stats
+    if (lvl == 1) plrHealth = maxPlrHealth;
+    hurtTimer = 0.0f;
+    plrKnock = {0, 0};
+    dead = false;
+    sYOFF = 0.1f;
+    playerSprite->col = vec4(1.0f);
+    shootTimer = 0.0f;
+    float aimYaw = radians(e->Renderer->cam.yaw);
+    plrAim = {-std::sin(aimYaw), std::cos(aimYaw)};//start aiming screen right
+
+    spawnSlimes(e);
 
     //spawn intro
     createIntro(e);
@@ -482,7 +836,7 @@ void updateDescent(engine* e) {
 
     vec2 center = {dungeonMap.holeX + 0.5f, dungeonMap.holeY + 0.5f};
     playerPos = mix(descendFrom, center, std::min(s * 3.0f, 1.0f));
-    playerSprite->pos.y = 0.1f - s * s * 0.6f;
+    sYOFF = 0.1f - s * s * 0.6f;
     playerLight->intensity = 1.0f - s;
 
     if (s >= 1.0f) loadLevel(e, level + 1);
@@ -499,12 +853,14 @@ void handle_input(engine* e) {
     if (introActive) {
         updateIntro(e);
         syncCamera(e);
+        placeSprites(e);
         return;
     }
 
     if (descending) {
         updateDescent(e);
         syncCamera(e);
+        placeSprites(e);
         return;
     }
 
@@ -531,12 +887,14 @@ void handle_input(engine* e) {
         vec2 right(-std::sin(yaw), std::cos(yaw));
         vec2 step = (up * walkDir.x + right * walkDir.y) * (speed * delta);
 
-        if (canStand(playerPos.x + step.x, playerPos.y)) playerPos.x += step.x;
-        if (canStand(playerPos.x, playerPos.y + step.y)) playerPos.y += step.y;
+        plrAim = safeNorm(up * walkDir.x + right * walkDir.y);
+
+        if (canStandR(playerPos.x + step.x, playerPos.y, playerRadius)) playerPos.x += step.x;
+        if (canStandR(playerPos.x, playerPos.y + step.y, playerRadius)) playerPos.y += step.y;
 
         spawnParticles(
             e->Renderer,
-            {0,-.05f},
+            projGround(e, playerPos) + vec2(0, -.05f),//at the player's feet
             vec2(walkDir.y, walkDir.x)*vec2(-1,-1)+vec2(0.0,0.2f),
             vec2(-.5f, .5f),
             vec2(0, -1.0f),
@@ -549,7 +907,38 @@ void handle_input(engine* e) {
         );
     }
 
-    if (dungeonMap.isHole((int)floor(playerPos.x), (int)floor(playerPos.y))) {
+    //knockback from hits
+    if (length(plrKnock) > 0.01f) {
+        vec2 kb = plrKnock * delta;
+        if (canStandR(playerPos.x + kb.x, playerPos.y, playerRadius)) playerPos.x += kb.x;
+        if (canStandR(playerPos.x, playerPos.y + kb.y, playerRadius)) playerPos.y += kb.y;
+        plrKnock *= std::exp(-8.0f * delta);
+    } else {
+        plrKnock = {0, 0};
+    }
+
+    //blink red
+    hurtTimer = std::max(0.0f, hurtTimer - delta);
+    bool blink = hurtTimer > 0.0f && ((int)(glfwGetTime() * 16.0) % 2 == 0);
+    playerSprite->col = blink ? vec4(1.0f, 0.3f, 0.3f, 1.0f) : vec4(1.0f);
+
+    shootTimer = std::max(0.0f, shootTimer - delta);
+    if (glfwGetKey(win, GLFW_KEY_E) == GLFW_PRESS && shootTimer <= 0.0f) {
+        shootTimer = shootCooldown;
+        fireBullet(e);
+    }
+
+    updateBullets(e, delta);
+    updateEnemies(e, delta);
+
+    //out of health = back to level 1
+    if (dead) {
+        loadLevel(e, 1);
+        return;
+    }
+
+    //stepping on the hole = jump down
+    if (dungeonMap.isHole((int)std::floor(playerPos.x), (int)std::floor(playerPos.y))) {
         descending = true;
         descendStart = glfwGetTime();
         descendFrom = playerPos;
@@ -557,6 +946,7 @@ void handle_input(engine* e) {
     }
 
     syncCamera(e);
+    placeSprites(e);
     updateWallFade(e);
 }
 
@@ -573,6 +963,7 @@ void updateUI(engine* e) {
     glfwGetWindowSize(win, &ww, &wh);
 
     //handle ui buttons
+    if (!uiButtonsExist)return;
     if (ww > 0 && wh > 0) {
         e->mousePos = vec2(mx, my);
         vec2 ndc = { (float)(mx / ww * 2.0 - 1.0), (float)(1.0 - my / wh * 2.0) };
@@ -617,7 +1008,7 @@ void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textSc
     btn->create(e->m_texture_atlas);
     e->Renderer->AddToRQ_2D(*btn);
 
-    //text follows the button's visibility
+    //text keeps buttons visibility
     btn->onUpdate = [btn](quad* q) -> void {
         for (auto l : btn->textQuads) {
             l->visible=q->visible;
@@ -652,7 +1043,6 @@ void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textSc
     e->addButtonToList(btn);
 }
 
-//bobbing title
 void createTitleText(engine* e, const std::string& text, vec2 pos, float scale) {
     float ns = scale * .8f;//80% original scale
     vec2 sc = {0.1f*ns, 0.1f*ns};
@@ -698,7 +1088,7 @@ void createTitleScene(engine* e) {
     e->Renderer->AddToRQ_M(*camLight);
 
     camLight->onUpdate = [e, camLight](object* o) -> void{
-        camLight->pos = e->Renderer->cam.pos;
+        camLight->pos = e->Renderer->cam.pos + vec3(playerPos.x - camFocus.x, 0.0f, playerPos.y - camFocus.y);
     };
 
     playerLight = camLight;
@@ -708,6 +1098,7 @@ void createPlayerSprite(engine* e) {
     quad* jimothy = new quad({0,0.2f}, {.3f, .4f}, tileUV(0,2));
     jimothy->create(e->m_texture_atlas);
     jimothy->visible=false;
+    jimothy->worldSpace = true;
     jimothy->onUpdate = [e](quad* q) -> void {
         if (e->isMoving) {
             q->setFrame((int)(glfwGetTime() * 16));
@@ -749,8 +1140,11 @@ void createTitleScreen(engine* e) {
         [e](button* q) ->void {
             hideButton(q);
             startGame(e);
+            uiButtonsExist=false;
         }
     );
+
+    uiButtonsExist=true;
 }
 
 //links a program and logs the reason if it fails
@@ -934,7 +1328,6 @@ GLFWwindow *engine::getWindow() {
 }
 
 void engine::setWindowSize(ivec2 *wSize) {
-    //a minimized window is 0x0, which would divide by zero below
     if (wSize->x <= 0 || wSize->y <= 0) return;
 
     winSize = wSize;

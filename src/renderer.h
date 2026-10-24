@@ -62,6 +62,7 @@ struct quad {
     unsigned int texture = 0;
 
     bool visible = true;
+    bool worldSpace = false;
 
     int z = 0;
 
@@ -142,6 +143,7 @@ struct quad {
         glBindVertexArray(VAO);
         glVertexAttrib2f(2, pos.x, pos.y);
         glVertexAttrib4f(3, col.r, col.g, col.b, col.a);
+        glVertexAttrib1f(4, worldSpace ? 1.0f : 0.0f);
 
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
@@ -393,6 +395,7 @@ public:
     void UpdateParticles(float dt);
     void DrawParticles(unsigned int program, float aspect);
     void DestroyParticles();
+    void MoveParticles(vec2 move);
 private:
     //for 2d elements
     std::vector<quad*> quads;

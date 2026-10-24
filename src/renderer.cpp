@@ -45,6 +45,7 @@ std::vector<quad*> renderer::GetRQ_2D() {
 
 void renderer::Draw2D(unsigned int program, float aspect) {
     glUseProgram(program);
+    glUniform1f(glGetUniformLocation(program, "uAspect"), aspect);
 
     //get the renderer ready to draw 2d
     glDisable(GL_CULL_FACE);
@@ -294,4 +295,10 @@ void renderer::RemoveFromRQ_2D(quad& q) {
 
 void renderer::RemoveFromRQ_M(object& obj) {
     objects.erase(std::remove(objects.begin(), objects.end(), &obj), objects.end());
+}
+
+void renderer::MoveParticles(vec2 move) {
+    for (auto &p : particles) {
+        if (p.life > 0.0f) p.pos += move;
+    }
 }
