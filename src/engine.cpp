@@ -35,13 +35,14 @@ static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)
 //global vars
 namespace {
     //title screen
-    const float titleBobAmp = 0.01f;
+    const float titleBobAmp = 0.075f;
 
     //world
     const float floorY = -3.5f; //center of the floor blocks
     const float floorTop = floorY + 0.5f;
     const int wallH = 3; //in blocks
-    const int hallWidth = 3; //in tiles
+    const int hallWidth = 2; //in tiles
+    const int fillPad = 30;
 
     //player
     const float walkSpeed = 2.0f;
@@ -78,7 +79,13 @@ namespace {
     double introStart = 0;
     light* beamLight = nullptr; //the light shining down through the hole
 
-    std::vector<quad*> introRocks; //rocks falling down the shaft
+    std::vector<quad*> introRocks; //rocks falling
+
+    const float fadeAlpha = 0.25f; //min alpha of walls
+    const float fadeSpeed = 8.0f; //fade speed
+    std::vector<std::vector<object*>> wallColumns; //y * w + x
+    std::vector<float> columnAlpha;
+    std::vector<int> fadedTiles;
 }
 
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f, int z=0) {
@@ -154,23 +161,87 @@ void syncCamera(engine* e) {
 }
 
 void buildDungeon(engine* e, const dungeon::Map& map) {
-    auto addBlock = [&](vec3 pos, auto uv) {
-        object* o = new object(pos, {1, 1, 1}, uv);
+    wallColumns.assign((size_t)map.w * map.h, std::vector<object*>());
+    columnAlpha.assign((size_t)map.w * map.h, 1.0f);
+    fadedTiles.clear();
+
+    auto addBox = [&](vec3 pos, vec3 size, auto uv) -> object* {
+        object* o = new object(pos, size, uv);
         o->create(e->m_texture_atlas);
         e->Renderer->AddToRQ_M(*o);
+        return o;
     };
 
-    for (int y = 0; y < map.h; y++) {
-        for (int x = 0; x < map.w; x++) {
-            //tile (x, y) is world (x, z=y), blocks are centered so offset by .5
-            if (map.isFloor(x, y)) {
-                addBlock({x + 0.5f, floorY, y + 0.5f}, tileUV(0, 0));
-            } else if (map.touchesFloor(x, y)) {
-                //only walls next to floor get built, the rest would never be seen
-                for (int h = 0; h < wallH; h++) {
-                    addBlock({x + 0.5f, floorY + h, y + 0.5f}, tileUV(0, 0));
-                }
+    //walls span floorY - 0.5 up to floorY + wallH - 0.5
+    const float wallCenterY = floorY + (wallH - 1) * 0.5f;
+
+    for (const dungeon::Rect& r : dungeon::greedyMesh(map, fillPad)) {
+        float cx = r.x + r.w * 0.5f;
+        float cz = r.y + r.h * 0.5f;
+
+        if (r.kind == dungeon::K_FLOOR) {
+            addBox({cx, floorY, cz}, {(float)r.w, 1.0f, (float)r.h}, tileUV(0, 0));
+        } else if (r.kind == dungeon::K_RING) {
+            object* o = addBox({cx, wallCenterY, cz}, {1.0f, (float)wallH, 1.0f}, tileUV(0, 0));
+            wallColumns[r.y * map.w + r.x].push_back(o);
+        } else {
+            addBox({cx, wallCenterY, cz}, {(float)r.w, (float)wallH, (float)r.h}, tileUV(0, 0));
+        }
+    }
+}
+
+//makes walls between the player and the camera transparent
+void updateWallFade(engine* e) {
+    float delta = (float)std::min(e->getDelta(), 0.1);
+    camera& c = e->Renderer->cam;
+    float wallTop = floorY + wallH - 0.5f;
+
+    float yaw = radians(c.yaw);
+    vec2 up(std::cos(yaw), std::sin(yaw));
+    vec2 right(-std::sin(yaw), std::cos(yaw));
+
+    std::vector<int> blocked;
+    for (float a : {-0.5f, 0.0f, 0.5f}) {
+        for (float b : {-0.35f, 0.0f, 0.35f}) {
+            vec2 p2 = playerPos + up * a + right * b;
+            vec3 target(p2.x, floorTop, p2.y);
+
+            const int steps = 24;
+            for (int i = 0; i <= steps; i++) {
+                vec3 p = mix(c.pos, target, (float)i / steps);
+                if (p.y > wallTop || p.y < floorTop + 1) continue;//above the walls or under the floor
+
+                int tx = (int)std::floor(p.x);
+                int tz = (int)std::floor(p.z);
+                if (!dungeonMap.inBounds(tx, tz) || dungeonMap.isFloor(tx, tz)) continue;
+
+                int idx = tz * dungeonMap.w + tx;
+                if (wallColumns[idx].empty()) continue;
+                if (std::find(blocked.begin(), blocked.end(), idx) == blocked.end()) blocked.push_back(idx);
             }
+        }
+    }
+
+    for (int idx : blocked) {
+        if (std::find(fadedTiles.begin(), fadedTiles.end(), idx) == fadedTiles.end()) fadedTiles.push_back(idx);
+    }
+
+    for (size_t i = 0; i < fadedTiles.size();) {
+        int idx = fadedTiles[i];
+        bool isBlocked = std::find(blocked.begin(), blocked.end(), idx) != blocked.end();
+
+        float target = isBlocked ? fadeAlpha : 1.0f;
+        float step = fadeSpeed * delta;
+        float a = columnAlpha[idx] + std::clamp(target - columnAlpha[idx], -step, step);
+
+        columnAlpha[idx] = a;
+        for (auto o : wallColumns[idx]) o->alpha = a;
+
+        if (a >= 1.0f) {
+            fadedTiles[i] = fadedTiles.back();
+            fadedTiles.pop_back();
+        } else {
+            i++;
         }
     }
 }
@@ -180,7 +251,7 @@ void hideButton(button* b) {
     for (auto t : b->textQuads) t->visible = false;
 }
 
-//rocks that fall from the ceiling and stay on the floor around the player
+//rocks in intro
 void spawnRubble(engine* e) {
     for (int i = 0; i < 10; i++) {
         float ang = rnd(0.0f, 6.28f);
@@ -211,7 +282,7 @@ void spawnRubble(engine* e) {
     }
 }
 
-//the light shaft, the rocks that fall down it and the rocks that plug the hole
+//intro anim
 void createIntro(engine* e) {
     //point light above the player, the pool of light on the floor
     beamLight = new light(object({0,0,0}, {.5f,.5f,.5f}, tileUV(0,0)));
@@ -236,7 +307,7 @@ void updateIntro(engine* e) {
     if (t >= introFallStart) {
         float s = std::clamp((t - introFallStart) / introFallTime, 0.0f, 1.0f);
         playerSprite->visible = true;
-        playerSprite->pos.y = introFallFrom * (1.0f - s * s);//speeds up as it falls
+        playerSprite->pos.y = introFallFrom * (1.0f - s * s) + 0.1f;//speeds up as it falls
     }
 
     //landing
@@ -245,7 +316,7 @@ void updateIntro(engine* e) {
 
         spawnParticles(
             e->Renderer,
-            {0,-.2f},
+            {0,-.1f},
             vec2(0.0f, 0.1f),
             vec2(-.8f, .8f),
             vec2(0, -0.5f),
@@ -275,7 +346,7 @@ void updateIntro(engine* e) {
         if (rnd(0.0f, 1.0f) < 0.5f) {
             spawnParticles(
                 e->Renderer,
-                {rnd(-.12f, 2), holeY},
+                {rnd(-2.0f, 2.0f), 2.0f},
                 vec2(0.0f, -0.2f),
                 vec2(-.1f, .1f),
                 vec2(0, -0.3f),
@@ -305,7 +376,7 @@ void updateIntro(engine* e) {
     if (t >= introEnd) {
         beamLight->enabled = false;
         playerLight->intensity = 1.0f;
-        playerSprite->pos.y = 0;
+        playerSprite->pos.y = 0.1f;
         camShake = {0, 0};
         introActive = false;
     }
@@ -382,7 +453,7 @@ void handle_input(engine* e) {
 
         spawnParticles(
             e->Renderer,
-            {0,-.15f},
+            {0,-.05f},
             vec2(walkDir.y, walkDir.x)*vec2(-1,-1)+vec2(0.0,0.2f),
             vec2(-.5f, .5f),
             vec2(0, -1.0f),
@@ -396,6 +467,7 @@ void handle_input(engine* e) {
     }
 
     syncCamera(e);
+    updateWallFade(e);
 }
 
 void updateUI(engine* e) {
@@ -543,8 +615,9 @@ void createTitleScene(engine* e) {
 }
 
 void createPlayerSprite(engine* e) {
-    quad* jimothy = new quad({0,0}, {.3f, .4f}, tileUV(0,2));
+    quad* jimothy = new quad({0,0.2f}, {.3f, .4f}, tileUV(0,2));
     jimothy->create(e->m_texture_atlas);
+    jimothy->visible=false;
     jimothy->onUpdate = [e](quad* q) -> void {
         if (e->isMoving) {
             q->setFrame((int)(glfwGetTime() * 16));

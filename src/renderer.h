@@ -219,6 +219,7 @@ struct object {
     unsigned int VAO = 0, VBO = 0, EBO = 0;
     unsigned int texture = 0;
 
+    float alpha = 1.0f; //1 = opaque
     bool visible = true;
     double creationTime = 0;
 
@@ -406,6 +407,5 @@ private:
     size_t pNext = 0;
     unsigned int pVAO = 0, pQuadVBO = 0, pInstVBO = 0;
 };
-
 
 #endif

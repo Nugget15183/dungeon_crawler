@@ -16,6 +16,7 @@ uniform vec3  uLightColor[MAX_LIGHTS];   // color * intensity
 uniform float uLightRadius[MAX_LIGHTS];
 
 uniform vec3 uAmbient;
+uniform float uAlpha;
 
 void main() {
     vec2 uv = tileRect.xy + fract(localUV) * tileRect.zw;
@@ -38,5 +39,5 @@ void main() {
         lit += uLightColor[i] * diff * atten;
     }
 
-    FragColor = vec4(albedo.rgb * lit, albedo.a);
+    FragColor = vec4(albedo.rgb * lit, uAlpha);
 }

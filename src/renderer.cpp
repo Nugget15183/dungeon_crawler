@@ -66,13 +66,22 @@ object& renderer::GetNextFromRQ_M() {
 void renderer::LoadRQ_M() {
     if (!m_render_queue.empty()) { logger::warn("3D Render Queue not empty when loading new items"); m_render_queue.clear(); }
 
+    std::vector<object*> opaque, transparent;
     for (auto* o : objects) {
-        if (o->visible) m_render_queue.push_back(o);
+        if (!o->visible) continue;
+        if (o->alpha < 1.0f) transparent.push_back(o);
+        else opaque.push_back(o);
     }
 
-    std::stable_sort(m_render_queue.begin(), m_render_queue.end(), [this](const object* a, const object* b) {
+    std::stable_sort(opaque.begin(), opaque.end(), [this](const object* a, const object* b) {
         return distance2(a->pos, cam.pos) < distance2(b->pos, cam.pos);
     });
+    std::stable_sort(transparent.begin(), transparent.end(), [this](const object* a, const object* b) {
+        return distance2(a->pos, cam.pos) > distance2(b->pos, cam.pos);
+    });
+
+    m_render_queue = opaque;
+    m_render_queue.insert(m_render_queue.end(), transparent.begin(), transparent.end());
 }
 
 void renderer::AddToRQ_M(object& obj) {
@@ -117,6 +126,8 @@ void renderer::Draw3D(unsigned int program, float aspect, lightingSetting lighti
     mat4 viewProj = cam.proj(aspect) * cam.view();
     int locVP = glGetUniformLocation(program, "uViewProj");
     int locModel = glGetUniformLocation(program, "uModel");
+    int locAlpha = glGetUniformLocation(program, "uAlpha");
+
     glUniformMatrix4fv(locVP, 1, GL_FALSE, value_ptr(viewProj));
 
     glEnable(GL_DEPTH_TEST);
@@ -127,10 +138,15 @@ void renderer::Draw3D(unsigned int program, float aspect, lightingSetting lighti
     while (!m_render_queue.empty()) {
         object* o = &GetNextFromRQ_M();
 
+        glDepthMask(o->alpha < 1.0f ? GL_FALSE : GL_TRUE);
+
         mat4 model = o->modelMatrix();
         glUniformMatrix4fv(locModel, 1, GL_FALSE, value_ptr(model));
+        glUniform1f(locAlpha, o->alpha);
         o->draw();
     }
+
+    glDepthMask(GL_TRUE);
 }
 
 //particles
