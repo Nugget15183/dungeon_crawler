@@ -5,8 +5,8 @@
 #include <algorithm>
 
 namespace dungeon {
-    enum Kind : unsigned char { K_FLOOR, K_RING, K_DEEP };
-    enum Tile : unsigned char { WALL = 0, FLOOR = 1 };
+    enum Kind : unsigned char { K_FLOOR, K_RING, K_DEEP, K_HOLE };
+    enum Tile : unsigned char { WALL = 0, FLOOR = 1, HOLE = 2 };
 
     struct Rect {
         int x, y, w, h;
@@ -19,7 +19,6 @@ namespace dungeon {
         int cx() const { return x + w / 2; }
         int cy() const { return y + h / 2; }
 
-        //keeps walls between rooms
         bool overlaps(const Room &o, int pad = 1) const {
             return x - pad < o.x + o.w && x + w + pad > o.x &&
                    y - pad < o.y + o.h && y + h + pad > o.y;
@@ -31,13 +30,18 @@ namespace dungeon {
         std::vector<Tile> tiles;
         std::vector<Room> rooms;
 
+        int holeX = -1, holeY = -1;
+
         bool inBounds(int x, int y) const { return x >= 0 && y >= 0 && x < w && y < h; }
 
         bool isFloor(int x, int y) const {
-            return inBounds(x, y) && tiles[y * w + x] == FLOOR;
+            return inBounds(x, y) && tiles[y * w + x] != WALL;
         }
 
-        //wall tile with floor touching
+        bool isHole(int x, int y) const {
+            return inBounds(x, y) && tiles[y * w + x] == HOLE;
+        }
+
         bool touchesFloor(int x, int y) const {
             for (int dy = -1; dy <= 1; dy++)
                 for (int dx = -1; dx <= 1; dx++)
@@ -45,7 +49,6 @@ namespace dungeon {
             return false;
         }
 
-        //the outer ring is never carved so the dungeon always has a wall border
         void carve(int x, int y) {
             if (x > 0 && y > 0 && x < w - 1 && y < h - 1) tiles[y * w + x] = FLOOR;
         }
@@ -73,7 +76,7 @@ namespace dungeon {
         }
     };
 
-    inline Map generate(int w, int h, int maxRooms, unsigned seed, int hallWidth = 2) {
+    inline Map generateOnce(int w, int h, int roomCount, unsigned seed, int hallWidth) {
         Map m;
         m.w = w;
         m.h = h;
@@ -82,7 +85,7 @@ namespace dungeon {
         std::mt19937 rng(seed);
         auto rnd = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(rng); };
 
-        for (int attempt = 0; attempt < maxRooms * 10 && (int) m.rooms.size() < maxRooms; attempt++) {
+        for (int attempt = 0; attempt < roomCount * 20 && (int) m.rooms.size() < roomCount; attempt++) {
             Room r;
             r.w = rnd(4, 9);
             r.h = rnd(4, 9);
@@ -118,6 +121,41 @@ namespace dungeon {
         return m;
     }
 
+    inline void placeExit(Map &m) {
+        if (m.rooms.empty()) return;
+
+        size_t best = m.rooms.size() - 1;
+        int bestScore = -1;
+        //skip first room
+        for (size_t i = 1; i < m.rooms.size(); i++) {
+            int score = std::min(std::min(m.rooms[i].w, m.rooms[i].h), 5);
+            if (score>bestScore) {
+                best = i;
+                bestScore = score;
+            }
+        }
+
+        const Room &r = m.rooms[best];
+        m.holeX = r.cx();
+        m.holeY = r.cy();
+
+        m.tiles[m.holeY * m.w + m.holeX ] = HOLE;
+    }
+
+    inline Map generate(int w, int h, int roomCount, unsigned seed, int hallWidth = 2) {
+        Map best;
+        for (int tryN = 0; tryN < 40; tryN++) {
+            Map m = generateOnce(w, h, roomCount, seed + tryN, hallWidth);
+            if ((int) m.rooms.size() == roomCount) {
+                placeExit(m);
+                return m;
+            }
+            if (m.rooms.size() > best.rooms.size()) best = std::move(m);
+        }
+        placeExit(best);
+        return best;
+    }
+
     inline std::vector<Rect> greedyMesh(const Map& m, int pad = 0) {
         const int W = m.w + pad * 2;
         const int H = m.h + pad * 2;
@@ -127,7 +165,8 @@ namespace dungeon {
             for (int gx = 0; gx < W; gx++) {
                 int x = gx - pad, y = gy - pad;
                 Kind k = K_DEEP;
-                if (m.isFloor(x, y)) k = K_FLOOR;
+                if (m.isHole(x, y)) k = K_HOLE;
+                else if (m.isFloor(x, y)) k = K_FLOOR;
                 else if (m.touchesFloor(x, y)) k = K_RING;
                 kinds[gy * W + gx] = k;
             }
@@ -143,7 +182,7 @@ namespace dungeon {
                 Kind k = kinds[gy * W + gx];
                 int w = 1, h = 1;
 
-                if (k != K_RING) {
+                if (k != K_RING && k != K_HOLE) {
                     while (gx + w < W && !used[gy * W + gx + w] && kinds[gy * W + gx + w] == k) w++;
 
                     for (; gy + h < H; h++) {
@@ -159,7 +198,7 @@ namespace dungeon {
                     for (int i = 0; i < w; i++)
                         used[(gy + j) * W + gx + i] = 1;
 
-                out.push_back({ gx - pad, gy - pad, w, h, k });
+                if (k != K_HOLE) out.push_back({ gx - pad, gy - pad, w, h, k });
             }
         }
 

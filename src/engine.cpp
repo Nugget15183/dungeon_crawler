@@ -13,18 +13,6 @@
 #include <random>
 #include <utility>
 
-/*
-todo list
-3d
-custom model loading
-player movement           (started: top-down wasd + tile collision, camera follows the 2d player)
-dungeon generation        (started: room + corridor generator in dungeon.h, built when Begin is pressed)
-spawn animation (cave collapse, trapping player in first room)   (started: see updateIntro)
-
-2D
-settings
- */
-
 using namespace util;
 using namespace logger;
 
@@ -33,6 +21,7 @@ static std::mt19937 rng{std::random_device{}()};
 static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)(rng); }
 
 //global vars
+//declare things here instead of using magic numbers
 namespace {
     //title screen
     const float titleBobAmp = 0.075f;
@@ -43,10 +32,25 @@ namespace {
     const int wallH = 3; //in blocks
     const int hallWidth = 2; //in tiles
     const int fillPad = 30;
+    const int baseRooms = 3;
+    const int roomsPerLevel = 1;//rooms added each level
+    const int maxRooms = 10;
+    const int baseMapSize = 26;//26x26
+    const int maxMapSize = 44;
+    const int mapGrowth = 2;//per level
+    const int platformH = 0.25f;//exit platform height
+    const float levelTextTime = 3.6f;
+    const float descendTime = 0.6f;
+    int level = 0;
+    bool descending = false;
+    double descendStart = 0;
+    vec2 descendFrom = {0,0};
+    std::vector<object*> levelObjs;
+    std::vector<quad*> levelText;
 
     //player
     const float walkSpeed = 2.0f;
-    const float sprintSpeed = 4.0f;
+    const float sprintSpeed = 2.5f;
     const float playerRadius = 0.125f; //collision half width
 
     //spawn intro (times are in seconds since Begin was pressed)
@@ -84,6 +88,7 @@ namespace {
     const float fadeAlpha = 0.25f; //min alpha of walls
     const float fadeSpeed = 8.0f; //fade speed
     std::vector<std::vector<object*>> wallColumns; //y * w + x
+    std::vector<object*> floorBlocks;
     std::vector<float> columnAlpha;
     std::vector<int> fadedTiles;
 }
@@ -111,6 +116,20 @@ std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, fl
     }
 
     return ret;
+}
+
+void showLevelText(engine* e, int lvl) {
+    for (auto q : StrToUI(e->m_font_atlas_2, {0, 0.85f}, "Level " + to_string(lvl), 1.5f, 5.0f)) {
+        q->col = {1, 1, 1, 0};
+        q->onUpdate = [](quad* self) -> void {
+            float age = (float)(glfwGetTime() - self->creationTime);
+            float fadeIn = std::clamp(age / 0.5f, 0.0f, 1.0f);
+            float fadeOut = std::clamp((levelTextTime - age) / 0.7f, 0.0f, 1.0f);
+            self->col.a = fadeIn * fadeOut;
+        };
+        e->Renderer->AddToRQ_2D(*q);
+        levelText.push_back(q);
+    }
 }
 
 void framebuffer_size_callback(GLFWwindow* win, int width, int height) {
@@ -162,6 +181,7 @@ void syncCamera(engine* e) {
 
 void buildDungeon(engine* e, const dungeon::Map& map) {
     wallColumns.assign((size_t)map.w * map.h, std::vector<object*>());
+    floorBlocks.assign((size_t)map.w * map.h, nullptr);
     columnAlpha.assign((size_t)map.w * map.h, 1.0f);
     fadedTiles.clear();
 
@@ -169,11 +189,12 @@ void buildDungeon(engine* e, const dungeon::Map& map) {
         object* o = new object(pos, size, uv);
         o->create(e->m_texture_atlas);
         e->Renderer->AddToRQ_M(*o);
+        levelObjs.push_back(o);
         return o;
     };
 
-    //walls span floorY - 0.5 up to floorY + wallH - 0.5
-    const float wallCenterY = floorY + (wallH - 1) * 0.5f;
+    const float upperH = (float)(wallH - 1);
+    const float upperCenterY = floorY + 0.5f + upperH * 0.5f;
 
     for (const dungeon::Rect& r : dungeon::greedyMesh(map, fillPad)) {
         float cx = r.x + r.w * 0.5f;
@@ -182,12 +203,34 @@ void buildDungeon(engine* e, const dungeon::Map& map) {
         if (r.kind == dungeon::K_FLOOR) {
             addBox({cx, floorY, cz}, {(float)r.w, 1.0f, (float)r.h}, tileUV(0, 0));
         } else if (r.kind == dungeon::K_RING) {
-            object* o = addBox({cx, wallCenterY, cz}, {1.0f, (float)wallH, 1.0f}, tileUV(0, 0));
-            wallColumns[r.y * map.w + r.x].push_back(o);
+            int idx = r.y * map.w + r.x;
+            floorBlocks[idx] = addBox({cx, floorY, cz}, {1.0f, 1.0f, 1.0f}, tileUV(0, 0));
+            wallColumns[idx].push_back(addBox({cx, upperCenterY, cz}, {1.0f, upperH, 1.0f}, tileUV(0, 0)));
         } else {
-            addBox({cx, wallCenterY, cz}, {(float)r.w, (float)wallH, (float)r.h}, tileUV(0, 0));
+            addBox({cx, floorY, cz}, {(float)r.w, 1.0f, (float)r.h}, tileUV(0, 0));
+            addBox({cx, upperCenterY, cz}, {(float)r.w, upperH, (float)r.h}, tileUV(0, 0));
         }
     }
+}
+
+void clearLevel(engine* e) {
+    for (object* o : levelObjs) {
+        e->Renderer->RemoveFromRQ_M(*o);
+        o->destroy();
+        delete o;
+    }
+    levelObjs.clear();
+    wallColumns.clear();
+    floorBlocks.clear();
+    columnAlpha.clear();
+    fadedTiles.clear();
+
+    for (quad* q : levelText) {
+        e->Renderer->RemoveFromRQ_2D(*q);
+        q->destroy();
+        delete q;
+    }
+    levelText.clear();
 }
 
 //makes walls between the player and the camera transparent
@@ -237,6 +280,13 @@ void updateWallFade(engine* e) {
         columnAlpha[idx] = a;
         for (auto o : wallColumns[idx]) o->alpha = a;
 
+        //the floor block under the wall fades with it, but all the way, revealing the void
+        if (object* fb = floorBlocks[idx]) {
+            float k = (1.0f - a) / (1.0f - fadeAlpha); //0 = solid, 1 = fully faded
+            fb->alpha = 1.0f - k * -1;
+            fb->visible = fb->alpha > 0.01f;
+        }
+
         if (a >= 1.0f) {
             fadedTiles[i] = fadedTiles.back();
             fadedTiles.pop_back();
@@ -279,19 +329,22 @@ void spawnRubble(engine* e) {
         };
 
         e->Renderer->AddToRQ_M(*o);
+        levelObjs.push_back(o);
     }
 }
 
 //intro anim
 void createIntro(engine* e) {
-    //point light above the player, the pool of light on the floor
-    beamLight = new light(object({0,0,0}, {.5f,.5f,.5f}, tileUV(0,0)));
-    beamLight->visible = false;
+    if (!beamLight) {
+        beamLight = new light(object({0,0,0}, {.5f,.5f,.5f}, tileUV(0,0)));
+        beamLight->visible = false;
+        beamLight->color = {1.0f, 0.95f, 0.8f};
+        beamLight->radius = 6.0f;
+        e->Renderer->AddLight(*beamLight);
+    }
     beamLight->pos = vec3(playerPos.x, floorY + 2.0f, playerPos.y);
-    beamLight->color = {1.0f, 0.95f, 0.8f};
-    beamLight->radius = 6.0f;
     beamLight->intensity = 0.0f;
-    e->Renderer->AddLight(*beamLight);
+    beamLight->enabled = true;
 }
 
 //update function but only for intro
@@ -382,33 +435,57 @@ void updateIntro(engine* e) {
     }
 }
 
-void startGame(engine* e) {
-    //hide the title screen
-    for (auto q : titleQuads) q->visible = false;
-    for (auto o : titleObjs) o->visible = false;
+void loadLevel(engine* e, int lvl) {
+    level = lvl;
+    clearLevel(e);
 
-    //generate + build the dungeon
-    dungeonMap = dungeon::generate(48, 48, 12, std::random_device{}(), hallWidth);
+    //each level is a little bigger with a few more rooms, up to a cap
+    int rooms = std::min(baseRooms + (lvl - 1) * roomsPerLevel, maxRooms);
+    int size = std::min(baseMapSize + (lvl - 1) * mapGrowth, maxMapSize);
+
+    dungeonMap = dungeon::generate(size, size, rooms, std::random_device{}(), hallWidth);
     buildDungeon(e, dungeonMap);
     inDungeon = true;
 
-    //put the player in the center of the first room
     const dungeon::Room& first = dungeonMap.rooms.front();
     playerPos = {first.cx() + 0.5f, first.cy() + 0.5f};
+    camShake = {0, 0};
     syncCamera(e);
 
-    //spawn intro, the player falls in and the hole caves over
+    //spawn intro
     createIntro(e);
     introStart = glfwGetTime();
     introActive = true;
     introLanded = false;
     introRubble = false;
+    descending = false;
     e->isMoving = false;
-    playerSprite->visible = false;//shows up when it starts falling
-    playerLight->intensity = 0.0f;//only the beam lights the room at first
+    playerSprite->visible = false;
+    playerLight->intensity = 0.0f;
+
+    showLevelText(e, lvl);
 
     e->lighting_setting = DUNGEON;
     e->state = IN_GAME;
+}
+
+void startGame(engine* e) {
+    //hide the title screen
+    for (auto q : titleQuads) q->visible = false;
+    for (auto o : titleObjs) o->visible = false;
+
+    loadLevel(e, 1);
+}
+
+void updateDescent(engine* e) {
+    float s = std::clamp((float)(glfwGetTime() - descendStart) / descendTime, 0.0f, 1.0f);
+
+    vec2 center = {dungeonMap.holeX + 0.5f, dungeonMap.holeY + 0.5f};
+    playerPos = mix(descendFrom, center, std::min(s * 3.0f, 1.0f));
+    playerSprite->pos.y = 0.1f - s * s * 0.6f;
+    playerLight->intensity = 1.0f - s;
+
+    if (s >= 1.0f) loadLevel(e, level + 1);
 }
 
 void handle_input(engine* e) {
@@ -421,6 +498,12 @@ void handle_input(engine* e) {
     //no movement while the intro plays
     if (introActive) {
         updateIntro(e);
+        syncCamera(e);
+        return;
+    }
+
+    if (descending) {
+        updateDescent(e);
         syncCamera(e);
         return;
     }
@@ -464,6 +547,13 @@ void handle_input(engine* e) {
             vec2(0.1f, 0.3f),
             1
         );
+    }
+
+    if (dungeonMap.isHole((int)floor(playerPos.x), (int)floor(playerPos.y))) {
+        descending = true;
+        descendStart = glfwGetTime();
+        descendFrom = playerPos;
+        e->isMoving = false;
     }
 
     syncCamera(e);
@@ -534,7 +624,7 @@ void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textSc
         }
     };
 
-    for (auto q : StrToUI(e->m_font_atlas, pos, std::move(text), textScale, 1)) {
+    for (auto q : StrToUI(e->m_font_atlas_2, pos, std::move(text), textScale, 1)) {
         q->col = vec4(1, 1, 1, 1);
         e->Renderer->AddToRQ_2D(*q);
 
@@ -753,8 +843,10 @@ int engine::init() {
 
     m_texture_atlas = loadTexture("res/mainAtlas.png");
     m_font_atlas = loadTexture("res/FontAtlas.png");
+    m_font_atlas_2 = loadTexture("res/DejaVu Sans Mono.png");
     if (!m_texture_atlas) { err("Failed to load main Texture Atlas"); return -1; }
     if (!m_font_atlas) { err("Failed to load font Texture Atlas"); return -1; }
+    if (!m_font_atlas_2) { err("Failed to load font Texture Atlas 2"); return -1; }
 
     glUseProgram(ui_shader_program);
     glUniform1i(glGetUniformLocation(ui_shader_program, "tex"), 0);

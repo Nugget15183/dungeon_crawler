@@ -372,6 +372,7 @@ public:
     quad& GetNextFromRQ_2D();
     void LoadRQ_2D();
     void AddToRQ_2D(quad& quad);
+    void RemoveFromRQ_2D(quad& q);
     std::vector<quad*> GetRQ_2D();
     void Draw2D(unsigned int program, float aspect);
 
@@ -379,6 +380,7 @@ public:
     object& GetNextFromRQ_M();
     void LoadRQ_M();
     void AddToRQ_M(object& obj);
+    void RemoveFromRQ_M(object& obj);
     void Draw3D(unsigned int program, float aspect, lightingSetting lighting);
     std::vector<object*> GetRQ_3D();
 

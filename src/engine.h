@@ -60,6 +60,7 @@ public:
     renderer* Renderer;
     unsigned int m_texture_atlas;
     unsigned int m_font_atlas;
+    unsigned int m_font_atlas_2;
 
     vec2 mousePos = {0,0};
 

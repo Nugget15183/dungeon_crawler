@@ -287,3 +287,11 @@ void renderer::DestroyParticles() {
     glDeleteBuffers(1, &pInstVBO);
     pVAO = pQuadVBO = pInstVBO = 0;
 }
+
+void renderer::RemoveFromRQ_2D(quad& q) {
+    quads.erase(std::remove(quads.begin(), quads.end(), &q), quads.end());
+}
+
+void renderer::RemoveFromRQ_M(object& obj) {
+    objects.erase(std::remove(objects.begin(), objects.end(), &obj), objects.end());
+}
