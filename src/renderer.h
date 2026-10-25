@@ -49,6 +49,7 @@ struct quad {
 
         this->pos = pos;
         this->uv = uv;
+        this->size=size;
     }
 
     std::vector<UVRect> frames;
@@ -69,6 +70,7 @@ struct quad {
     double creationTime = 0;
 
     vec2 pos;
+    vec2 size;
     vec4 col = {1,1,1, 1};
 
     std::function<void(quad*)> onUpdate = nullptr;
@@ -79,6 +81,24 @@ struct quad {
         verts[1].uv = {uv.u1, uv.v0};
         verts[2].uv = {uv.u0, uv.v0};
         verts[3].uv = {uv.u0, uv.v1};
+
+        if (VBO) {
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+        }
+    }
+
+    void setSize(vec2 newSize) {
+        if (newSize == size) return;
+        size = newSize;
+
+        float hx = 0.5f * size.x;
+        float hy = 0.5f * size.y;
+
+        verts[0].pos = { hx,  hy};
+        verts[1].pos = { hx, -hy};
+        verts[2].pos = {-hx, -hy};
+        verts[3].pos = {-hx,  hy};
 
         if (VBO) {
             glBindBuffer(GL_ARRAY_BUFFER, VBO);

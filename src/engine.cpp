@@ -13,6 +13,14 @@
 #include <random>
 #include <utility>
 
+struct TitleState {
+    bool inGuide = false;
+    button* bgn = nullptr;
+    button* guide = nullptr;
+    button* back = nullptr;
+};
+
+
 using namespace util;
 using namespace logger;
 
@@ -104,9 +112,26 @@ namespace {
     const float introEnd = 3.9f; //player gets control
     const float holeY = 0.6f; //where the hole in the ceiling is on screen
 
+    //death screen
+    const float deathStartDelay = 0.5f;
+    const float deathLetterGap = 0.35f;
+    const float deathLetterTime = 0.45f;
+    const float deathStartScale = 4.0f;
+
+    std::shared_ptr<TitleState> titleUI;
+    decltype(engine::state) menuState{};
+    decltype(engine::lighting_setting) menuLighting{};
+
+    bool deathButtonsShown = false;
+    double deathStart = 0;
+    std::vector<quad*> deathText;
+    button* deathRetry = nullptr;
+    button* deathMenu = nullptr;
+
     //things the title screen made
     std::vector<object*> titleObjs;
     std::vector<quad*> titleQuads;
+    vector<quad*> hpText;
 
     //dungeon + player
     dungeon::Map dungeonMap;
@@ -125,6 +150,7 @@ namespace {
     light* beamLight = nullptr; //the light shining down through the hole
 
     std::vector<quad*> introRocks; //rocks falling
+    bool deathActive = false;
 
     const float fadeAlpha = 0.25f; //min alpha of walls
     const float fadeSpeed = 8.0f; //fade speed
@@ -156,7 +182,14 @@ namespace {
     std::vector<bullet> bullets;
     float shootTimer = 0.0f;
     vec2 plrAim = {0, 1};
+
+    vec2 pHPDisplayPos = {-1.0f,.9f};
+    int lastHealth = maxPlrHealth;
 }
+
+//forward decls
+void updateDeathScreen(engine* e);
+void startDeathScreen(engine* e);
 
 std::vector<quad*> StrToUI(unsigned int fontAtlas, vec2 pos, std::string str, float scale = 1.0f, int z=0) {
     std::vector<quad*> ret;
@@ -445,13 +478,11 @@ void updateEnemies(engine* e, float delta) {
             s.hopT += delta;
             float t = s.hopT;
 
-            //frames 0-2 compress, 3 is the stretched leap, 4 is the landing
             int frame;
             if (t < sWindup) frame = (int)(t / sWindup * 3.0f);
             else if (t < sWindup + sAirTime) frame = 3;
             else frame = 4;
 
-            //only travels while it's in the air
             if (t >= sWindup && t < sWindup + sAirTime) {
                 vec2 step = s.hopDir * (sHopDist / sAirTime * delta);
                 if (canStandR(s.pos.x + step.x, s.pos.y, sRad, true)) s.pos.x += step.x;
@@ -642,6 +673,11 @@ void hideButton(button* b) {
     for (auto t : b->textQuads) t->visible = false;
 }
 
+void showButton(button* b) {
+    b->visible = true;
+    for (auto t : b->textQuads) t->visible = true;
+}
+
 //rocks in intro
 void spawnRubble(engine* e) {
     for (int i = 0; i < 10; i++) {
@@ -721,6 +757,10 @@ void updateIntro(engine* e) {
             vec2(0.4f, 0.9f),
             30
         );
+
+        for (auto q : hpText) {
+            q->visible = true;
+        }
     }
 
     //camera shake
@@ -849,6 +889,11 @@ void handle_input(engine* e) {
 
     if (e->state!=IN_GAME) return;
 
+    if (deathActive) {
+        updateDeathScreen(e);
+        return;
+    }
+
     //no movement while the intro plays
     if (introActive) {
         updateIntro(e);
@@ -931,11 +976,7 @@ void handle_input(engine* e) {
     updateBullets(e, delta);
     updateEnemies(e, delta);
 
-    //out of health = back to level 1
-    if (dead) {
-        loadLevel(e, 1);
-        return;
-    }
+    if (dead) {startDeathScreen(e); return;}
 
     //stepping on the hole = jump down
     if (dungeonMap.isHole((int)std::floor(playerPos.x), (int)std::floor(playerPos.y))) {
@@ -1001,7 +1042,24 @@ void updateUI(engine* e) {
     }
 }
 
-void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textScale=1.0f, std::function<void(button*)> onClick=nullptr, std::function<void(button*)>onMouseEnter=nullptr, std::function<void(button*)>onMouseExit=nullptr) {
+void updateHealthUI(engine* e) {
+    if (plrHealth != lastHealth) {
+        for (auto q : hpText) {
+            q->visible=false;
+            e->Renderer->RemoveFromRQ_2D(*q);
+        }
+
+        string hpStr = "Health " + to_string( (int)round((float) plrHealth / (float)maxPlrHealth * 100)) + "%";
+        for (auto q : StrToUI(e->m_font_atlas_2, pHPDisplayPos, hpStr)) {
+            e->Renderer->AddToRQ_2D(*q);
+            hpText.push_back(q);
+        }
+
+        lastHealth = plrHealth;
+    }
+}
+
+button* createButton(engine* e, vec2 pos, vec2 size, std::string text, float textScale=1.0f, std::function<void(button*)> onClick=nullptr, std::function<void(button*)>onMouseEnter=nullptr, std::function<void(button*)>onMouseExit=nullptr) {
     button* btn = new button(quad(pos, size, tileUV(1, 0)));
 
     btn->col = vec4(1, 1, 1, 1);
@@ -1022,7 +1080,7 @@ void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textSc
         btn->textQuads.push_back(q);
     }
 
-    btn->onClick = onClick;
+    btn->onClick = std::move(onClick);
 
     btn->onHoverEnter = [onMouseEnter](button* q) -> void {
         q->col = vec4(.8f, .8f, .8f, 1);
@@ -1041,6 +1099,7 @@ void createButton(engine* e, vec2 pos, vec2 size, std::string text, float textSc
     };
 
     e->addButtonToList(btn);
+    return btn;
 }
 
 void createTitleText(engine* e, const std::string& text, vec2 pos, float scale) {
@@ -1077,6 +1136,99 @@ void createTitleText(engine* e, const std::string& text, vec2 pos, float scale) 
         e->Renderer->AddToRQ_2D(*fill);
         titleQuads.push_back(fill);
     }
+}
+
+//death screen
+void closeDeathScreen(engine* e) {
+    for (quad* q : deathText) {
+        e->Renderer->RemoveFromRQ_2D(*q);
+        q->destroy();
+        delete q;
+    }
+    deathText.clear();
+
+    hideButton(deathRetry);
+    hideButton(deathMenu);
+    dead=false;
+    deathActive = false;
+    deathButtonsShown=false;
+}
+
+void createDeathButtons(engine* e) {
+    if (deathRetry) return;
+
+    deathRetry = createButton(e, {0, -.1f}, {1.1f, 0.3f}, "Retry", 1,[e](button* q) -> void {
+        closeDeathScreen(e);
+        uiButtonsExist=false;
+        loadLevel(e, 1);
+    });
+
+    deathMenu = createButton(e, {0, -.45f}, {1.1f, 0.3f}, "Back to Main Menu", 1,[e](button* q) -> void {
+        closeDeathScreen(e);
+        clearLevel(e);
+        inDungeon=false;
+        playerSprite->visible = false;
+
+        for (auto q : hpText) q->visible = false;
+        for (auto q : titleQuads) q->visible = true;
+        for (auto q : titleObjs) q->visible = true;
+
+        if (titleUI) {
+            titleUI->inGuide=false;
+            showButton(titleUI->bgn);
+            showButton(titleUI->guide);
+            hideButton(titleUI->back);
+        }
+
+        e->isMoving=false;
+        e->state=menuState;
+        e->lighting_setting=menuLighting;
+    });
+
+    hideButton(deathRetry);
+    hideButton(deathMenu);
+}
+
+void startDeathScreen(engine* e) {
+    createDeathButtons(e);
+
+    dead = false;
+    deathActive = true;
+    deathButtonsShown=false;
+    e->isMoving=false;
+    deathStart=glfwGetTime();
+
+    int i=0;
+    for (auto q : StrToUI(e->m_font_atlas_2, {0, 0.35f}, "YOU DIED", 3.0f, 10)) {
+        vec2 baseSize = q->size;
+
+        q->col = {0.8f, 0.05f, 0.05f, 0.0f};
+        q->creationTime = deathStart + deathStartDelay + i * deathLetterGap;   //per-letter start time
+        q->onUpdate = [baseSize](quad* self) -> void {
+            float age = (float)(glfwGetTime() - self->creationTime);
+            float t = std::clamp(age / deathLetterTime, 0.0f, 1.0f);
+            float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+
+            self->setSize(baseSize * (1.0f + (deathStartScale - 1.0f) * (1.0f - ease)));
+            self->col.a = std::clamp(age / 0.1f, 0.0f, 1.0f);
+        };
+
+        e->Renderer->AddToRQ_2D(*q);
+        deathText.push_back(q);
+        i++;
+    }
+}
+
+void updateDeathScreen(engine* e) {
+    if (deathButtonsShown)return;
+
+    float total = deathStartDelay + (deathText.size() - 1) * deathLetterGap + deathLetterTime;
+    if (glfwGetTime() - deathStart < total) return;
+
+    deathButtonsShown=true;
+    showButton(deathRetry);
+    showButton(deathMenu);
+    uiButtonsExist=true;
 }
 
 //create title scene
@@ -1131,23 +1283,49 @@ void createTitleScreen(engine* e) {
     createTitleText(e, "Buried Alive", {0, 0.6f}, 3.0f);
     createPlayerSprite(e);
 
-    createButton(
-        e,
-        {0, 0.2f},
-        {.4f, .3f},
-        "Begin",
-        1.0f,
-        [e](button* q) ->void {
+    auto st = std::make_shared<TitleState>();
+
+    st->bgn = createButton(e, {0, 0.2f}, {.4f, .3f}, "Begin", 1.0f,
+        [e, st](button* q) {
+            if (st->inGuide) return;
             hideButton(q);
+            hideButton(st->guide);
+            hideButton(st->back);
             startGame(e);
-            uiButtonsExist=false;
-        }
-    );
+            uiButtonsExist = false;
+        });
+
+    st->guide = createButton(e, {0, -.1f}, {.4f, .3f}, "Guide", 1.0f,
+        [st](button* q) {
+            hideButton(q);
+            hideButton(st->bgn);
+            showButton(st->back);
+            st->inGuide = true;
+        });
+
+    st->back = createButton(e, {0, -.7f}, {.4f, .3f}, "Back", 1.0f,
+        [st](button* q) {
+            if (!st->inGuide) return;
+            hideButton(q);
+            showButton(st->bgn);
+            showButton(st->guide);
+            st->inGuide = false;
+        });
+    hideButton(st->back);
+
+    for (auto q : StrToUI(e->m_font_atlas_2, pHPDisplayPos, "Health 100%")) {
+        q->visible = false;
+        e->Renderer->AddToRQ_2D(*q);
+        hpText.push_back(q);
+    }
 
     uiButtonsExist=true;
+    titleUI = st;
+    menuState = e->state;
+    menuLighting = e->lighting_setting;
 }
 
-//links a program and logs the reason if it fails
+//links a shader program and logs the reason if it fails
 unsigned int linkProgram(unsigned int vert, unsigned int frag, const char* name) {
     unsigned int prog = glCreateProgram();
     glAttachShader(prog, vert);
@@ -1254,7 +1432,6 @@ int engine::init() {
     createTitleScreen(this);
 
     createLowRes((int)(180.0f * winSize->x / winSize->y), 180);//180x180px with aspect ratio
-
     info("Initialized Successfully.");
     return 0;
 }
@@ -1301,6 +1478,7 @@ void engine::update() {
     double frameT = glfwGetTime();
 
     handle_input(this);
+    updateHealthUI(this);
     updateUI(this);
 
     for (auto q : Renderer->GetAll3D()) {q->update();}
