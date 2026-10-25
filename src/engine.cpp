@@ -18,8 +18,8 @@ struct TitleState {
     button* bgn = nullptr;
     button* guide = nullptr;
     button* back = nullptr;
+    std::vector<quad*> guideText;
 };
-
 
 using namespace util;
 using namespace logger;
@@ -32,7 +32,7 @@ static float rnd(float a, float b) { return std::uniform_real_distribution(a, b)
 //declare things here instead of using magic numbers
 namespace {
     //title screen
-    const float titleBobAmp = 0.075f;
+    const float titleBobAmp = 0.05f;
 
     //camera
     const float camFollow = 6.0f;
@@ -625,7 +625,7 @@ void updateWallFade(engine* e) {
             const int steps = 24;
             for (int i = 0; i <= steps; i++) {
                 vec3 p = mix(c.pos, target, (float)i / steps);
-                if (p.y > wallTop || p.y < floorTop + 1) continue;//above the walls or under the floor
+                if (p.y > wallTop || p.y < floorTop) continue;//above the walls or under the floor
 
                 int tx = (int)std::floor(p.x);
                 int tz = (int)std::floor(p.z);
@@ -1280,10 +1280,31 @@ void createPlayerSprite(engine* e) {
 
 void createTitleScreen(engine* e) {
     createTitleScene(e);
-    createTitleText(e, "Buried Alive", {0, 0.6f}, 3.0f);
+    createTitleText(e, "Buried Alive", {0, 0.75f}, 3.0f);
     createPlayerSprite(e);
 
     auto st = std::make_shared<TitleState>();
+
+    std::vector<std::string> guideTextLines = {
+        "Welcome to Buried Alive!",
+        "Your objective is to survive for as long as possible!",
+        "To play the controls are simple",
+        "W A S D to move",
+        "E is to shoot projectiles",
+        "Shift is to sprint",
+        "But be careful of the slimes, they attack on sight",
+        "To advance to the next level, look for a hole in the floor and jump down!",
+        "Good luck!"
+    };
+
+    for (size_t i = 0; i < guideTextLines.size(); i++) {
+        float y = 0.5f - 0.12f * (float)i;
+        for (auto q : StrToUI(e->m_font_atlas_2, {0, y}, guideTextLines[i], 0.7f, 2)) {
+            q->visible = false;
+            e->Renderer->AddToRQ_2D(*q);
+            st->guideText.push_back(q);
+        }
+    }
 
     st->bgn = createButton(e, {0, 0.2f}, {.4f, .3f}, "Begin", 1.0f,
         [e, st](button* q) {
@@ -1301,6 +1322,7 @@ void createTitleScreen(engine* e) {
             hideButton(st->bgn);
             showButton(st->back);
             st->inGuide = true;
+            for (auto t : st->guideText) t->visible = true;
         });
 
     st->back = createButton(e, {0, -.7f}, {.4f, .3f}, "Back", 1.0f,
@@ -1310,6 +1332,7 @@ void createTitleScreen(engine* e) {
             showButton(st->bgn);
             showButton(st->guide);
             st->inGuide = false;
+            for (auto t : st->guideText) t->visible = false;
         });
     hideButton(st->back);
 
