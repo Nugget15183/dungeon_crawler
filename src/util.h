@@ -5,7 +5,6 @@
 #ifndef DUNGEONCRAWLER_UTIL_H
 #define DUNGEONCRAWLER_UTIL_H
 
-#include <glad/glad.h>
 #include <fstream>
 #include <sstream>
 #include <ios>
@@ -19,8 +18,8 @@ using namespace logger;
 
 namespace util {
 
-//reads a file from a string path
-inline string readFile(const string& path) {
+inline string readFile(string path) {
+    //get the file itself
     ifstream file(path, ios::in | ios::binary);
 
     //if the file isnt found, return an empty str
@@ -30,11 +29,12 @@ inline string readFile(const string& path) {
     stringstream ss;
     ss << file.rdbuf();
 
+    //return the contents of the file
     return ss.str();
 }
 
 struct image {
-    int width = 0, height = 0, channels = 0;
+    int width, height, channels = 0;
     unsigned char* data = nullptr;
 
     //default constructor
@@ -56,7 +56,7 @@ struct image {
     bool valid() const { return data != nullptr; }
 };
 
-inline unsigned int compileShader(GLenum type, const std::string& path) {
+unsigned int compileShader(GLenum type, const std::string& path) {
     //read the file, error if not successfull
     std::string src = readFile(path);
     if (src.empty()) { err(("Could not read shader file: " + path).c_str()); return 0; }
@@ -84,13 +84,8 @@ inline unsigned int compileShader(GLenum type, const std::string& path) {
 inline image loadImage(const string& path, int targetChannels = 0) {
     image img;
 
-    //get the image data
+    //load the data from the file into the image struct
     img.data = stbi_load(path.c_str(), &img.width, &img.height, &img.channels, targetChannels);
-
-    if (!img.data) {
-        err(("Could not load image: " + path + " (" + stbi_failure_reason() + ")").c_str());
-        return img;
-    }
 
     //confirm a valid amount of channels
     if (targetChannels != 0) img.channels = targetChannels;
