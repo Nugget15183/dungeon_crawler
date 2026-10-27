@@ -8,21 +8,18 @@ add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/packages/glm)
 
 #build glad
-add_library(glad STATIC
-        packages/glad/src/glad.c
-)
+add_library(glad STATIC packages/glad/src/glad.c)
 target_include_directories(glad PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/packages/glad/include)
 
 #build glfw
-#disable glfw docs + examples
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-
 add_subdirectory(packages/glfw-3.5.1)
 
-#build executable
-add_executable(dungeoncrawler src/main.cpp
+
+add_executable(dungeoncrawler
+        src/main.cpp
         src/engine.cpp
         src/engine.h
         src/renderer.cpp
@@ -32,9 +29,6 @@ add_executable(dungeoncrawler src/main.cpp
         src/stb_image.h
         src/dungeon.h)
 
-#link libraries to the executable
-target_link_libraries(dungeoncrawler PRIVATE
-        glfw
-        glad
-        glm
-)
+target_include_directories(dungeoncrawler PRIVATE src)
+
+target_link_libraries(dungeoncrawler PRIVATE glfw glad glm)
